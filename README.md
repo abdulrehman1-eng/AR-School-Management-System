@@ -1,156 +1,371 @@
-# AR School Management System — Upgraded Edition
+# 🏫 AR School Management System
 
-**AR Software Solutions** · Smart Software. Simple Solutions.
+**AR School Management System** is a professional desktop-based school management platform built with **Python and Tkinter**.
 
-## 1. Install
+It brings essential school operations into one unified system, including **student management, admissions, attendance, fees, results, teachers, payroll, accounting, timetable, reports, academic years, user permissions, backup, and audit logging**.
+
+> **AR Software Solutions — Smart Software. Simple Solutions.**
+
+Designed with a clean and modern interface, the system focuses on **usability, organization, security, and professional desktop application design** for school administration.
+
+---
+
+## 📸 Software Preview
+
+### 🔐 Login System
+
+Secure role-based login interface supporting **Admin, Teacher, and Reception** users.
+
+<img width="460" height="552" alt="Login Screen" src="https://github.com/user-attachments/assets/34f85ffa-e968-403b-9d41-76186e6f9158" />
+
+---
+
+### 📊 Dashboard
+
+A modern dashboard providing a quick overview of students, teachers, attendance, fees, revenue, expenses, and common school operations.
+
+<img width="1366" height="768" alt="Dashboard" src="https://github.com/user-attachments/assets/96e7dbb7-a22e-478b-8bfc-ad8d5dc891e0" />
+
+---
+
+### 🧑‍🎓 Student Management
+
+Centralized student management with search, filtering, admissions, profiles, fee information, academic records, and ID card generation.
+
+<img width="980" height="768" alt="Student Management" src="https://github.com/user-attachments/assets/20881ada-8958-4d43-a496-42021f4c566e" />
+
+---
+
+### 🕒 Attendance Management
+
+Manual and scan/code-based attendance with Present, Absent, Leave, and Late tracking.
+
+<img width="1366" height="768" alt="Attendance Management" src="https://github.com/user-attachments/assets/02b7ffd5-63bd-4a05-a174-0570daea2cec" />
+
+---
+
+### 📝 Results & Academics
+
+Manage student marks, exams, grading, academic performance, and PDF marksheets.
+
+<img width="1366" height="768" alt="Results & Academics" src="https://github.com/user-attachments/assets/89ece614-f92a-490b-84f3-3a4a3e400617" />
+
+---
+
+### 👩‍🏫 Teachers & Payroll
+
+Manage teachers, attendance, salaries, and professional payslips from one dedicated interface.
+
+<img width="1180" height="752" alt="Teachers & Payroll" src="https://github.com/user-attachments/assets/48ad21bf-a9ec-4c4c-9611-6a2f980d1713" />
+
+---
+
+### 🗓️ Timetable Management
+
+Create and manage class schedules using days, time slots, subjects, and teachers.
+
+<img width="1366" height="768" alt="Timetable Management" src="https://github.com/user-attachments/assets/49225693-89ec-460b-b905-269ebbe62a54" />
+
+---
+
+### 💰 Finance & Accounting
+
+Track school revenue, expenses, fees, salaries, and financial records through an integrated accounting system.
+
+<img width="1366" height="768" alt="Finance Management" src="https://github.com/user-attachments/assets/8a26a771-f2c0-43e1-84cf-1ca7bdd8141d" />
+
+---
+
+### 🏫 School Profile & Configuration
+
+Manage school identity, branding, users, permissions, academic years, backups, and system settings.
+
+<img width="1366" height="768" alt="School Settings" src="https://github.com/user-attachments/assets/fb0ae2c3-2c95-48b6-bfcc-d452ead87cdb" />
+
+---
+
+### 🛡️ Security & Audit Logs
+
+Track supported user and administrative actions with usernames and timestamps for accountability.
+
+<img width="1366" height="768" alt="Security and Audit Logs" src="https://github.com/user-attachments/assets/af7586c7-10bc-4a3e-beee-457fd0dec051" />
+
+---
+
+# ✨ Key Features
+
+### 🧑‍🎓 Student Management
+
+* Student directory
+* Search and filtering
+* Student admission
+* Student profiles
+* Fee information
+* Academic records
+* ID card generation
+* Student archive and restore
+
+### 🕒 Attendance
+
+* Manual attendance
+* Scan/code-based attendance
+* Present / Absent / Leave / Late tracking
+* Attendance history
+
+### 💵 Fee Management
+
+* Fee collection
+* Paid and pending fee tracking
+* Fee records
+* PDF fee receipts
+* Accounting integration
+
+### 📝 Results & Academics
+
+* Marks entry
+* Exam management
+* Grading system
+* Pass/fail rules
+* Academic performance
+* PDF marksheets
+
+### 👩‍🏫 Teachers & Payroll
+
+* Teacher registration
+* Teacher directory
+* Teacher attendance
+* Salary management
+* Payslip generation
+
+### 🗓️ Timetable
+
+* Class scheduling
+* Day and time-slot management
+* Subject assignment
+* Teacher assignment
+
+### 💰 Finance & Accounting
+
+* Revenue tracking
+* Expense tracking
+* Fee integration
+* Salary integration
+* Financial dashboard
+
+### 📅 Academic Years
+
+* Academic year management
+* Current year selection
+* Student year enrollment
+* Academic year records
+
+### 🔐 Security
+
+* Role-Based Access Control
+* Admin / Teacher / Reception roles
+* Permission management
+* Password hashing
+* Audit logging
+
+### 💾 Backup & Data Safety
+
+* SQLite database
+* Local backups
+* Timestamped backups
+* USB backup support
+* Safe data operations
+
+### 🤖 AI Admin Assistant
+
+* Local database-grounded assistant
+* Student statistics
+* Fee information
+* Attendance information
+* Revenue and expense information
+* Results information
+* Teacher attendance queries
+* Supported English and Roman Urdu queries
+
+---
+
+# 🎨 Professional UI & Design
+
+AR School Management System is designed with a **modern, clean, and consistent desktop interface**.
+
+The application uses:
+
+* Centralized UI theme
+* Consistent colors and typography
+* Professional dashboard cards
+* Structured navigation
+* Responsive data tables
+* Clear forms and dialogs
+* Role-based interface controls
+* Consistent buttons and icons
+* User-friendly administrative workflows
+
+The goal is to provide a **professional desktop experience rather than a basic Tkinter interface**.
+
+---
+
+# 🛠️ Technology Stack
+
+| Category        | Technology              |
+| --------------- | ----------------------- |
+| Language        | Python 3                |
+| GUI             | Tkinter                 |
+| Database        | SQLite                  |
+| Authentication  | PBKDF2 Password Hashing |
+| Access Control  | RBAC                    |
+| Reporting       | PDF Generation          |
+| Barcode         | Code128 Support         |
+| QR Code         | QR Generation           |
+| Version Control | Git & GitHub            |
+
+---
+
+# 📁 Project Structure
+
+```text
+AR-School-Management-System/
+│
+├── ar_school_pack/
+│   ├── app.py
+│   ├── db.py
+│   ├── security.py
+│   ├── rbac.py
+│   ├── branding.py
+│   ├── accounting.py
+│   ├── results_engine.py
+│   ├── reports.py
+│   ├── theme.py
+│   ├── ai_assistant.py
+│   ├── academic_year.py
+│   ├── student_lifecycle.py
+│   ├── requirements.txt
+│   └── ...
+│
+├── .gitignore
+├── LICENSE
+└── README.md
+```
+
+### Core Modules
+
+| Module                 | Purpose                                  |
+| ---------------------- | ---------------------------------------- |
+| `app.py`               | Main application and user interface      |
+| `db.py`                | SQLite database management               |
+| `security.py`          | Authentication and password security     |
+| `rbac.py`              | Roles and permissions                    |
+| `accounting.py`        | Finance and accounting                   |
+| `results_engine.py`    | Grading and result rules                 |
+| `reports.py`           | PDF reports and documents                |
+| `theme.py`             | Centralized UI design system             |
+| `ai_assistant.py`      | Local AI Admin Assistant                 |
+| `academic_year.py`     | Academic year management                 |
+| `student_lifecycle.py` | Student archive and lifecycle management |
+
+---
+
+# 🚀 Quick Start
 
 ```bash
+git clone https://github.com/abdulrehman1-eng/AR-School-Management-System.git
+cd AR-School-Management-System/ar_school_pack
 pip install -r requirements.txt
+python app.py
 ```
 
-> `qrcode` is optional. If it isn't installed, ID cards still generate —
-> they show a printed student-ID code stamp instead of a scannable QR
-> square. Everything else works identically either way.
+> **Requirements:** Python 3.x and Tkinter.
 
-## 2. Run
+---
 
-```bash
-python3 app.py
+# 🤖 AI Admin Assistant
+
+The built-in assistant works with the school's local database to answer supported administrative questions.
+
+Example:
+
+```text
+How many students are enrolled?
+
+Which students have pending fees?
+
+What is today's attendance?
+
+How much revenue was recorded?
+
+How much expense was recorded?
 ```
 
-A fresh `school_system.db` is created automatically on first run. If you're
-upgrading from an older copy of this project, drop your existing
-`school_system.db` into this folder before running — see **Section 5**
-below; your data is upgraded in place, nothing is dropped or deleted.
+The assistant is designed to provide database-based answers rather than inventing school information.
 
-## 3. Default accounts
+---
 
-The application creates initial accounts for development/testing.
-For production use, change or disable all default accounts and create
-individual accounts for school staff under Settings → Users & Roles.
+# 🏫 Demo Data
 
-Never publish real production credentials in this repository.
+The screenshots use **sample/demo school data**.
 
-## 4. File map
+### Demo School
 
-| File | Purpose |
-|---|---|
-| `app.py` | Tkinter UI (all tabs) + login window |
-| `db.py` | Schema, single shared connection, indexes, non-destructive migrations |
-| `security.py` | PBKDF2 password hashing + legacy plain-text auto-upgrade |
-| `rbac.py` | Permission matrix (Admin/Teacher/Reception) + DB-backed overrides |
-| `branding.py` | Centralized org name/logo/contact used everywhere |
-| `accounting.py` | Revenue/expense ledger, fee & salary integration |
-| `results_engine.py` | Configurable grading bands + pass/fail rules |
-| `reports.py` | PDF generation (ID card w/ QR, payslip, marksheet) |
-| `theme.py` | Central design system — palette, fonts, sidebar/card/button styling |
-| `ai_assistant.py` | Rule-based, database-grounded AI Admin Assistant (no external API — see § 6) |
-| `academic_year.py` | Academic Year/session management — create/close years, per-student year enrollment history |
-| `student_lifecycle.py` | Safe Archive/Restore (reversible) and Permanent Delete (backup + transaction + rollback) for students |
+**AR Academy**
 
-## How to generate ID cards, receipts, and reports
+No real student information, production passwords, API keys, or private school data should be included in the public repository.
 
-- **ID cards:** Students page → select a student → "Generate ID Card". Produces
-  a PDF with a QR code and a Code128 barcode (both require the optional
-  `qrcode` / `python-barcode` packages — see § 6 below for what happens
-  without them).
-- **Fee receipts:** recording a fee payment (new admission or editing an
-  existing student's Paid Fee) automatically offers a receipt dialog
-  right after the save succeeds — "Print Slip" opens the generated PDF
-  in your system's default PDF viewer (print from there), "Save Slip
-  As..." lets you choose where to save it.
-- **Marksheets/report cards:** Results & Academics page → enter a
-  Student ID → "🧾 Marksheet PDF".
-- **Payslips:** Teachers & Payroll page → select a teacher → "Generate
-  Payslip" (blocked from silently duplicating if one was already issued
-  this month for that teacher).
+---
 
-## Students: Archive vs. Permanent Delete, and Academic Years
+# 🔒 Security
 
-- **Archive Student** (reversible): removes a student from the default
-  Students directory view while keeping every attendance, marks, and fee
-  record exactly as it was. Use this for anyone who left, graduated, or
-  transferred. **Restore Student** reverses it at any time. Toggle
-  "Show Archived" in the directory to see archived students again.
-- **Permanently Delete** (irreversible, Admin only): actually removes the
-  student and their attendance/marks/academic-year/admission-profile
-  rows from the database. Before doing anything, it (1) shows exactly
-  what will be removed, (2) takes a full timestamped database backup
-  into `backups/`, then (3) deletes everything in one all-or-nothing
-  transaction — if any step fails, nothing is changed. Fee/accounting
-  ledger entries (`accounting_revenue`) are never deleted by this, even
-  on permanent delete, since they're a financial audit trail. Use this
-  only for genuine mistaken entries, not for students who simply left.
-- **Academic Years:** Settings → Academic Year (Admin only). Only one
-  year is ever "Current" at a time — new admissions and the Students
-  directory's year filter default to it. **Close Selected Year** always
-  takes a full database backup first (so it's always reversible by
-  restoring that file), marks the year Closed, and can open the next
-  year as Current in the same step. Closing a year never touches
-  student/attendance/marks/fee data by itself.
+The application includes:
 
-## 5. Backup & restore
+* Password hashing
+* Role-Based Access Control
+* Permission management
+* Audit logging
+* Database backups
+* Safe destructive operations
+* Local SQLite data storage
 
-**Backup:** Settings → Backup, or copy `school_system.db` anywhere while
-the app is closed (it's a single SQLite file — no other state to copy).
-A timestamped backup file (`school_backup_YYYYMMDD_HHMMSS.db`) is what the
-in-app "Backup" button produces.
+> Never publish real passwords, API keys, tokens, or private student information in a public repository.
 
-**Restore:** close the app, replace `school_system.db` with the backup
-file (rename it back to `school_system.db`), then relaunch. There is no
-in-app restore button yet — see Known Limitations.
+---
 
-**Upgrading an older install:** just copy the old `school_system.db` into
-this project folder and run `app.py`. `db.init_db()` only ever *adds*
-tables/columns — it never drops or alters existing ones — so existing
-students, fees, attendance, marks, and audit history all carry forward
-untouched. This was verified against a synthetic pre-upgrade database as
-part of QA (see `QA_REPORT.md`).
+# 📌 Project
 
-## 6. Known limitations
+**AR School Management System** is an actively developed desktop school-management project created as part of the **AR Software Solutions** software portfolio.
 
-- No self-service "change my own password" screen for logged-in users.
-- Real QR codes require the optional `qrcode` package; without it, ID
-  cards fall back to a printed code stamp (still scannable by name/typed
-  entry into the attendance field, just not a QR image). The same applies
-  to the Code128 barcode and the optional `python-barcode` package —
-  without it, the barcode area falls back to a printed-text stamp.
-  **Neither library is installed in the environment this build was
-  tested in (no network access), so only the fallback paths have been
-  exercised — install both packages and scan a generated ID card with an
-  actual barcode scanner before relying on this for real students.**
-- `branding.logo_path` is stored but not yet drawn onto generated PDFs
-  (org name/address/phone/email are).
-- Archiving/restoring a student now uses its own `student.archive`
-  permission (separate from `student.delete`) — see `rbac.py`.
-- The AI Admin Assistant (sidebar → 🤖 AI Admin Assistant) is a **local,
-  rule-based query engine**, not a call to an external AI service — this
-  environment has no network access to reach one, and the design keeps
-  every answer traceable to a real database query so it can never
-  hallucinate a number. It understands a defined set of question types
-  (fee status, attendance, class counts, revenue/expense, results,
-  teacher attendance, etc.) in English and Roman Urdu/English mixed
-  phrasing. Questions outside that set get an honest "I couldn't find
-  this information" rather than a wrong or invented answer.
-- `student_lifecycle.permanent_delete_student()` and
-  `academic_year.close_year()` write their backups to a `backups/`
-  folder created next to `school_system.db` — that folder isn't part of
-  version control/USB backups by default, so periodically copy it
-  offsite too (or run Settings → USB Backup, which is separate and
-  unaffected by this).
-- The following areas from the production-hardening request were **not**
-  implemented in this release and remain open work: professional ID
-  card redesign, a separate admission dialog window, a redesigned report
-  card, extended teacher profile fields, timetable conflict detection,
-  finance date-range reporting, a dedicated Fee Collection window, and a
-  formal fee receipt PDF, per-student promotion/graduation workflow UI
-  during year closing, and pagination for very large student directories.
-  See `QA_REPORT.md` for the full itemized status.
+The project demonstrates practical experience in:
 
-None of these affect data safety or core daily workflows (admissions,
-attendance, fees, results, payroll, accounting, reporting all work fully).
+**Python • Tkinter • SQLite • Database Design • RBAC • Authentication • PDF Reports • Desktop UI/UX • Software Architecture**
 
-## 7. Support
+---
 
-AR Software Solutions — see in-app About/Help for contact details once
-configured under Settings.
+# 👨‍💻 Author
+
+## Abdul Rehman
+
+**AR Software Solutions**
+
+GitHub: **[@abdulrehman1-eng](https://github.com/abdulrehman1-eng)**
+
+> **Smart Software. Simple Solutions.**
+
+---
+
+# ⭐ Support the Project
+
+If you find this project interesting:
+
+⭐ Star the repository
+🐛 Report bugs
+💡 Suggest improvements
+🤝 Follow the development
+
+---
+
+## 📄 License
+
+**Copyright © 2026 AR Software Solutions. All rights reserved.**
+
+This software is proprietary. Unauthorized copying, commercial use, redistribution, or resale is not permitted without written permission from AR Software Solutions.
