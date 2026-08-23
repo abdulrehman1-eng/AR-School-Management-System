@@ -1,0 +1,6 @@
+reportlab
+openpyxl
+matplotlib
+qrcode
+python-barcode
+Pillow

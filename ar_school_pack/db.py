@@ -14,8 +14,9 @@ import os
 import threading
 import contextlib
 from datetime import datetime
+from paths import get_database_path, get_backups_dir
 
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "school_system.db")
+DB_PATH = str(get_database_path())
 
 _lock = threading.Lock()
 _conn = None
@@ -238,7 +239,7 @@ def backup_database(reason: str = "manual") -> str:
 
     Returns the path to the backup file that was created.
     """
-    backups_dir = os.path.join(os.path.dirname(DB_PATH), "backups")
+    backups_dir = str(get_backups_dir())
     os.makedirs(backups_dir, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     safe_reason = "".join(ch for ch in reason if ch.isalnum() or ch in ("-", "_")) or "manual"
