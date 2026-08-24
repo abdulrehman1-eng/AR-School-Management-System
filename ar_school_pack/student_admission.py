@@ -30,8 +30,153 @@ def _ensure_extra_table():
         previous_school TEXT, previous_class TEXT,
         emergency_contact_name TEXT, emergency_contact_phone TEXT,
         emergency_relationship TEXT, emergency_notes TEXT,
+        admission_fee REAL DEFAULT 0,
+        admission_fee_paid REAL DEFAULT 0,
         FOREIGN KEY(student_id) REFERENCES students(student_id)
     )""", commit=True)
+    # Older installs created the table without these columns — add them safely.
+    for col, typedef in (
+        ("admission_fee", "REAL DEFAULT 0"),
+        ("admission_fee_paid", "REAL DEFAULT 0"),
+    ):
+        try:
+            db.run(
+                f"ALTER TABLE student_admission_extra ADD COLUMN {col} {typedef}",
+                commit=True,
+            )
+        except Exception:
+            pass  # column already exists
+
+
+def _ensure_admission_fee_ledger():
+    """One-time admission fee ledger, separate from monthly fee_cycles.
+
+    Tracks Charged / Paid / Pending for the one-time admission fee so
+    Student Profile, Fee Management, and reports can show it apart from
+    monthly dues. Idempotent.
+    """
+    db.run("""
+    CREATE TABLE IF NOT EXISTS admission_fee_ledger (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        student_id TEXT NOT NULL,
+        charged_amount REAL NOT NULL DEFAULT 0,
+        paid_amount REAL NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'Pending',
+        charged_date TEXT,
+        paid_date TEXT,
+        payment_method TEXT,
+        remarks TEXT,
+        created_by TEXT,
+        UNIQUE(student_id),
+        FOREIGN KEY(student_id) REFERENCES students(student_id)
+    )""", commit=True)
+
+
+def _record_admission_fee(role, student_id, charged, paid, actor, payment_method="Cash"):
+    """Persist one-time admission fee (separate from monthly fee_cycles).
+
+    - Writes/updates admission_fee_ledger
+    - Posts paid portion to accounting_revenue as 'Admission Fee'
+    - Best-effort row in fee_payments with fee_type='Admission Fee' when the
+      table supports it (ignored if schema has no fee_type column)
+    """
+    _ensure_admission_fee_ledger()
+    charged = float(charged or 0)
+    paid = float(paid or 0)
+    if charged < 0:
+        charged = 0.0
+    if paid < 0:
+        paid = 0.0
+    if paid > charged:
+        paid = charged
+
+    if charged <= 0 and paid <= 0:
+        return None
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    if charged <= 0:
+        status = "Paid"
+    elif paid <= 0:
+        status = "Pending"
+    elif paid >= charged:
+        status = "Paid"
+    else:
+        status = "Partial"
+
+    existing = db.run(
+        "SELECT id, paid_amount FROM admission_fee_ledger WHERE student_id=?",
+        (student_id,), fetchone=True,
+    )
+    if existing:
+        db.run(
+            """UPDATE admission_fee_ledger
+               SET charged_amount=?, paid_amount=?, status=?,
+                   paid_date=CASE WHEN ? > 0 THEN ? ELSE paid_date END,
+                   payment_method=?, remarks=?, created_by=?
+               WHERE student_id=?""",
+            (charged, paid, status, paid, today, payment_method,
+             "One-time admission fee", actor, student_id),
+            commit=True,
+        )
+        ledger_id = existing[0]
+    else:
+        db.run(
+            """INSERT INTO admission_fee_ledger
+               (student_id, charged_amount, paid_amount, status, charged_date,
+                paid_date, payment_method, remarks, created_by)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (student_id, charged, paid, status, today,
+             today if paid > 0 else None, payment_method,
+             "One-time admission fee", actor),
+            commit=True,
+        )
+        row = db.run(
+            "SELECT id FROM admission_fee_ledger WHERE student_id=?",
+            (student_id,), fetchone=True,
+        )
+        ledger_id = row[0] if row else None
+
+    # Accounting: only the paid slice, tagged as Admission Fee (not monthly).
+    # Uses record_admission_fee_revenue so it does not require the stricter
+    # accounting.revenue.add permission — same gate as regular fee collection.
+    if paid > 0:
+        try:
+            import accounting
+            accounting.record_admission_fee_revenue(
+                role, student_id, paid, actor,
+                description=f"One-time admission fee — {student_id}",
+                payment_method=payment_method,
+            )
+        except Exception as exc:
+            print(f"Admission fee accounting warning: {exc}")
+
+    # Optional fee_payments row with fee_type so Fee Management can filter.
+    if paid > 0:
+        try:
+            db.run(
+                """INSERT INTO fee_payments
+                   (student_id, amount, payment_date, payment_method, remarks,
+                    received_by, fee_type)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (student_id, paid, today, payment_method,
+                 "One-time Admission Fee", actor, "Admission Fee"),
+                commit=True,
+            )
+        except Exception:
+            # Table may lack fee_type or use different columns — non-fatal.
+            try:
+                db.run(
+                    """INSERT INTO fee_payments
+                       (student_id, amount, payment_date, payment_method, remarks, received_by)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    (student_id, paid, today, payment_method,
+                     "One-time Admission Fee [fee_type=Admission Fee]", actor),
+                    commit=True,
+                )
+            except Exception as exc:
+                print(f"Admission fee_payments insert note: {exc}")
+
+    return {"id": ledger_id, "charged": charged, "paid": paid, "status": status}
 
 
 class AdmissionWindow:
@@ -48,6 +193,7 @@ class AdmissionWindow:
             return
 
         _ensure_extra_table()
+        _ensure_admission_fee_ledger()
 
         # Imported here (not at module load) so this file has no hard
         # dependency on app.py existing in every context, but reuses the
@@ -161,12 +307,16 @@ class AdmissionWindow:
         entry_row(ac, "Academic Year", "academic_year")
         entry_row(ac, "Class / Section", "class_sec", required=True)
         combo_row(ac, "Admission Type", "admission_type", ADMISSION_TYPES)
-        entry_row(ac, "Total Fee (Rs.)", "total_fee")
-        entry_row(ac, "Paid Fee at Admission (Rs.)", "paid_fee")
+        entry_row(ac, "Monthly Fee (Rs.)", "total_fee")
+        entry_row(ac, "Admission Fee — One-Time (Rs.)", "admission_fee")
+        entry_row(ac, "Paid Monthly Fee at Admission (Rs.)", "paid_fee")
+        entry_row(ac, "Paid Admission Fee at Admission (Rs.)", "admission_fee_paid")
         self.vars["admission_date"].insert(0, datetime.now().strftime("%Y-%m-%d"))
         self.vars["academic_year"].insert(0, academic_year.get_current_year_label())
         self.vars["total_fee"].insert(0, "0")
+        self.vars["admission_fee"].insert(0, "0")
         self.vars["paid_fee"].insert(0, "0")
+        self.vars["admission_fee_paid"].insert(0, "0")
 
         # ---- E. Emergency ----
         em = section("E. Emergency Information")
@@ -206,7 +356,11 @@ class AdmissionWindow:
         self.vars["admission_date"].insert(0, datetime.now().strftime("%Y-%m-%d"))
         self.vars["academic_year"].insert(0, academic_year.get_current_year_label())
         self.vars["total_fee"].insert(0, "0")
+        if "admission_fee" in self.vars:
+            self.vars["admission_fee"].insert(0, "0")
         self.vars["paid_fee"].insert(0, "0")
+        if "admission_fee_paid" in self.vars:
+            self.vars["admission_fee_paid"].insert(0, "0")
         self.photo_path_var.set("")
         self.lbl_photo.config(text="No\nPhoto", bg="#cbd5e1", fg="black")
         self._refresh_auto_id()
@@ -275,11 +429,35 @@ class AdmissionWindow:
         try:
             total_fee = float(self.vars["total_fee"].get().strip() or 0)
             paid_fee = float(self.vars["paid_fee"].get().strip() or 0)
+            admission_fee = float(
+                (self.vars["admission_fee"].get().strip() if "admission_fee" in self.vars else "0") or 0
+            )
+            admission_fee_paid = float(
+                (self.vars["admission_fee_paid"].get().strip() if "admission_fee_paid" in self.vars else "0") or 0
+            )
         except ValueError:
-            messagebox.showerror("Invalid Fee", "Total Fee and Paid Fee must be numbers.", parent=self.win)
+            messagebox.showerror(
+                "Invalid Fee",
+                "Monthly Fee, Admission Fee, and Paid amounts must be numbers.",
+                parent=self.win,
+            )
             return
-        if total_fee < 0 or paid_fee < 0:
+        if total_fee < 0 or paid_fee < 0 or admission_fee < 0 or admission_fee_paid < 0:
             messagebox.showerror("Invalid Fee", "Fee amounts cannot be negative.", parent=self.win)
+            return
+        if admission_fee_paid > admission_fee:
+            messagebox.showerror(
+                "Invalid Fee",
+                "Paid Admission Fee cannot exceed Admission Fee (One-Time).",
+                parent=self.win,
+            )
+            return
+        if paid_fee > total_fee and total_fee > 0:
+            messagebox.showerror(
+                "Invalid Fee",
+                "Paid Monthly Fee cannot exceed Monthly Fee amount.",
+                parent=self.win,
+            )
             return
 
         guardian_cnic = self.vars["guardian_cnic"].get().strip()
@@ -298,9 +476,15 @@ class AdmissionWindow:
 
         s_id = self.lbl_auto_id.cget("text").replace("Student ID (auto): ", "")
 
-        summary = (f"Name: {name}\nClass: {cls}\nStudent ID: {s_id}\n"
-                   f"Total Fee: Rs. {total_fee:,.2f}   Paid: Rs. {paid_fee:,.2f}\n\n"
-                   "Confirm this admission?")
+        due_now = (admission_fee - admission_fee_paid) + max(0.0, total_fee - paid_fee)
+        summary = (
+            f"Name: {name}\nClass: {cls}\nStudent ID: {s_id}\n\n"
+            f"Monthly Fee: Rs. {total_fee:,.2f}   (Paid now: Rs. {paid_fee:,.2f})\n"
+            f"Admission Fee (One-Time): Rs. {admission_fee:,.2f}   "
+            f"(Paid now: Rs. {admission_fee_paid:,.2f})\n"
+            f"Remaining at admission: Rs. {due_now:,.2f}\n\n"
+            "Confirm this admission?"
+        )
         if not messagebox.askyesno("Confirm Admission", summary, parent=self.win):
             return
 
@@ -330,10 +514,13 @@ class AdmissionWindow:
                       (student_id, gender, blood_group, nationality, religion, mother_name, guardian_name,
                        guardian_cnic, occupation, alt_phone, email, current_address, city, area,
                        admission_date, academic_year, admission_type, previous_school, previous_class,
-                       emergency_contact_name, emergency_contact_phone, emergency_relationship, emergency_notes)
-                      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                       emergency_contact_name, emergency_contact_phone, emergency_relationship, emergency_notes,
+                       admission_fee, admission_fee_paid)
+                      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                       ON CONFLICT(student_id) DO UPDATE SET
-                        gender=excluded.gender, blood_group=excluded.blood_group""",
+                        gender=excluded.gender, blood_group=excluded.blood_group,
+                        admission_fee=excluded.admission_fee,
+                        admission_fee_paid=excluded.admission_fee_paid""",
                    (s_id, self.vars["gender"].get(), self.vars["blood_group"].get(),
                     self.vars["nationality"].get().strip(), self.vars["religion"].get().strip(),
                     self.vars["mother_name"].get().strip(), self.vars["guardian_name"].get().strip(),
@@ -345,7 +532,8 @@ class AdmissionWindow:
                     self.vars["emergency_contact_name"].get().strip(),
                     self.vars["emergency_contact_phone"].get().strip(),
                     self.vars["emergency_relationship"].get().strip(),
-                    self.vars["emergency_notes"].get().strip()), commit=True)
+                    self.vars["emergency_notes"].get().strip(),
+                    admission_fee, admission_fee_paid), commit=True)
 
             # Record this student's enrollment for the chosen academic
             # year (defaults to the current session). Non-fatal if it
@@ -360,38 +548,82 @@ class AdmissionWindow:
             except Exception as exc:
                 print(f"Academic year enrollment warning: {exc}")
 
-            # Generate fee cycle immediately for the newly admitted student
-            # and, if an initial payment was collected, post it through the
-            # ledger so fee_cycles / fee_payments / accounting_revenue /
-            # students.paid_fee all stay consistent (no double-entry).
+            # --- Monthly fee (fee_type conceptually = 'Monthly Fee') ---
+            # Generate the regular monthly cycle only for the recurring fee.
+            # Admission Fee is tracked separately and must NEVER mix into this cycle.
             try:
                 now_dt = datetime.now()
-                cycle = fee_cycles.generate_cycle(
-                    role=self.user_role,
-                    student_id=s_id,
-                    billing_month=now_dt.month,
-                    billing_year=now_dt.year,
-                    fee_amount=total_fee,
-                    actor=self.current_user,
-                )
+                cycle = None
+                if total_fee > 0:
+                    try:
+                        cycle = fee_cycles.generate_cycle(
+                            role=self.user_role,
+                            student_id=s_id,
+                            billing_month=now_dt.month,
+                            billing_year=now_dt.year,
+                            fee_amount=total_fee,
+                            actor=self.current_user,
+                            fee_type="Monthly Fee",
+                        )
+                    except TypeError:
+                        # Older fee_cycles.generate_cycle without fee_type kwarg
+                        cycle = fee_cycles.generate_cycle(
+                            role=self.user_role,
+                            student_id=s_id,
+                            billing_month=now_dt.month,
+                            billing_year=now_dt.year,
+                            fee_amount=total_fee,
+                            actor=self.current_user,
+                        )
                 if paid_fee > 0 and cycle and rbac.can(self.user_role, "student.fee.edit"):
                     try:
-                        fee_cycles.record_payment(
-                            self.user_role,
-                            cycle["id"],
-                            paid_fee,
-                            "Cash",
-                            self.current_user,
-                            remarks="Initial fee payment at admission",
-                        )
+                        try:
+                            fee_cycles.record_payment(
+                                self.user_role,
+                                cycle["id"],
+                                paid_fee,
+                                "Cash",
+                                self.current_user,
+                                remarks="Initial monthly fee payment at admission",
+                                fee_type="Monthly Fee",
+                            )
+                        except TypeError:
+                            fee_cycles.record_payment(
+                                self.user_role,
+                                cycle["id"],
+                                paid_fee,
+                                "Cash",
+                                self.current_user,
+                                remarks="Initial monthly fee payment at admission [fee_type=Monthly Fee]",
+                            )
                     except Exception as pay_exc:
-                        print(f"Admission payment posting warning: {pay_exc}")
+                        print(f"Monthly fee payment posting warning: {pay_exc}")
             except ValueError as ve:
                 print(f"Fee cycle generation note: {ve}")
             except Exception as exc:
                 print(f"Fee cycle auto-generation warning: {exc}")
 
-            self._log(self.current_user, f"Admitted new student {name} ({s_id}) via Admission window")
+            # --- One-time Admission Fee (fee_type = 'Admission Fee') ---
+            # Completely separate from monthly fee_cycles / students.total_fee.
+            try:
+                if admission_fee > 0 or admission_fee_paid > 0:
+                    _record_admission_fee(
+                        self.user_role,
+                        s_id,
+                        admission_fee,
+                        admission_fee_paid,
+                        self.current_user,
+                        payment_method="Cash",
+                    )
+            except Exception as af_exc:
+                print(f"Admission fee ledger warning: {af_exc}")
+
+            self._log(
+                self.current_user,
+                f"Admitted new student {name} ({s_id}) via Admission window "
+                f"[monthly={total_fee}, admission_fee={admission_fee}, "
+                f"paid_monthly={paid_fee}, paid_admission={admission_fee_paid}]",
+            )
 
             # WhatsApp Integration — template from system_settings (user presses Send)
             try:
@@ -418,16 +650,29 @@ class AdmissionWindow:
 
         self._submitting = False
         self.btn_save.config(state="normal", text="💾 SAVE ADMISSION")
-        self._show_success(s_id, name, cls)
+        self._show_success(
+            s_id, name, cls,
+            monthly_fee=total_fee, paid_monthly=paid_fee,
+            admission_fee=admission_fee, paid_admission=admission_fee_paid,
+        )
 
     # ------------------------------------------------------------------
-    def _show_success(self, s_id, name, cls):
+    def _show_success(self, s_id, name, cls, monthly_fee=0, paid_monthly=0,
+                      admission_fee=0, paid_admission=0):
         for w in self.result_frame.winfo_children():
             w.destroy()
         card, cbody = theme.section_card(self.result_frame, "✅ Admission Successful")
         card.pack(fill=tk.X)
         tk.Label(cbody, text=f"{name}   |   Student ID: {s_id}   |   Class: {cls}",
-                 font=theme.FONT_BODY_BOLD, bg=theme.WHITE).pack(anchor="w", pady=(0, 8))
+                 font=theme.FONT_BODY_BOLD, bg=theme.WHITE).pack(anchor="w", pady=(0, 4))
+        fee_lines = (
+            f"Monthly Fee: Rs. {float(monthly_fee):,.2f}  "
+            f"(Paid: Rs. {float(paid_monthly):,.2f})   ·   "
+            f"Admission Fee (One-Time): Rs. {float(admission_fee):,.2f}  "
+            f"(Paid: Rs. {float(paid_admission):,.2f})"
+        )
+        tk.Label(cbody, text=fee_lines, font=theme.FONT_SMALL, bg=theme.WHITE,
+                 fg=theme.TEXT_MUTED).pack(anchor="w", pady=(0, 8))
 
         def gen_card(path):
             row = db.run("SELECT name, father_name, class_sec, phone, photo_path FROM students WHERE student_id=?",

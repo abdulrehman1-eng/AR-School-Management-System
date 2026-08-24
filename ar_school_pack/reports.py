@@ -37,14 +37,17 @@ except ImportError:
 # ---------------------------------------------------------------------------
 NAVY = colors.HexColor("#0f172a")
 NAVY_MID = colors.HexColor("#1e293b")
-BLUE = colors.HexColor("#0284c7")
-BLUE_LIGHT = colors.HexColor("#38bdf8")
-SILVER = colors.HexColor("#f1f5f9")
+BLUE = colors.HexColor("#2563eb")
+BLUE_LIGHT = colors.HexColor("#60a5fa")
+SILVER = colors.HexColor("#f8fafc")
 SILVER_BORDER = colors.HexColor("#e2e8f0")
 MUTED = colors.HexColor("#64748b")
 SUCCESS = colors.HexColor("#16a34a")
+SUCCESS_BG = colors.HexColor("#dcfce7")
 DANGER = colors.HexColor("#dc2626")
+DANGER_BG = colors.HexColor("#fee2e2")
 WARNING = colors.HexColor("#d97706")
+WARNING_BG = colors.HexColor("#fef3c7")
 WHITE = colors.white
 BLACK = colors.black
 
@@ -192,7 +195,7 @@ def _kv_row(c, x, y, label, value, label_w=110, font_size=10):
 # ===========================================================================
 def generate_id_card(student_id, name, cls, out_path, father_name="", dob="", phone="",
                      session="", photo_path=None, emergency_phone=""):
-    """Professional student ID card.
+    """Professional student ID card — PVC smart-card style.
 
     - DOB is intentionally not shown (kept as unused kwarg for older callers).
     - Emergency contact number is shown when provided.
@@ -203,50 +206,59 @@ def generate_id_card(student_id, name, cls, out_path, father_name="", dob="", ph
     session = session or datetime.now().strftime("%Y")
     issue_date = datetime.now().strftime("%d-%b-%Y")
 
-    # Card size (portrait, print-friendly)
-    card_w, card_h = 340, 500
+    # Card size (portrait, print-friendly PVC proportions)
+    card_w, card_h = 340, 530
     card_x = (612 - card_w) / 2
-    card_y = 260
+    card_y = 230
 
-    # Soft shadow
+    # Soft drop shadow
     c.setFillColor(colors.HexColor("#94a3b8"))
-    c.roundRect(card_x + 5, card_y - 5, card_w, card_h, 14, fill=1, stroke=0)
+    c.roundRect(card_x + 4, card_y - 4, card_w, card_h, 12, fill=1, stroke=0)
 
     # Card base
     c.setFillColor(WHITE)
     c.setStrokeColor(NAVY)
-    c.setLineWidth(1.8)
-    c.roundRect(card_x, card_y, card_w, card_h, 14, fill=1, stroke=1)
+    c.setLineWidth(1.6)
+    c.roundRect(card_x, card_y, card_w, card_h, 12, fill=1, stroke=1)
 
-    # ===== TOP HEADER (navy + blue accent) =====
+    # ===== TOP HEADER (navy + blue accent bar) =====
     c.setFillColor(NAVY)
-    c.rect(card_x + 1.8, card_y + card_h - 88, card_w - 3.6, 86.2, fill=1, stroke=0)
+    c.roundRect(card_x + 1.5, card_y + card_h - 78, card_w - 3.0, 76.5, 11, fill=1, stroke=0)
+    c.rect(card_x + 1.5, card_y + card_h - 78, card_w - 3.0, 20, fill=1, stroke=0)
     c.setFillColor(BLUE)
-    c.rect(card_x + 1.8, card_y + card_h - 92, card_w - 3.6, 5, fill=1, stroke=0)
+    c.rect(card_x + 1.5, card_y + card_h - 82, card_w - 3.0, 5, fill=1, stroke=0)
 
-    # Decorative side stripe
+    # Decorative left accent stripe
     c.setFillColor(BLUE)
-    c.rect(card_x + 1.8, card_y + 90, 5, card_h - 180, fill=1, stroke=0)
+    c.rect(card_x + 1.5, card_y + 96, 4, card_h - 178, fill=1, stroke=0)
 
     org = (b["org_name"] or "ACADEMY").upper()
     c.setFillColor(WHITE)
-    c.setFont("Helvetica-Bold", 13)
-    c.drawCentredString(card_x + card_w / 2, card_y + card_h - 36, org[:30])
-    c.setFont("Helvetica", 8)
+    c.setFont("Helvetica-Bold", 12)
+    c.drawCentredString(card_x + card_w / 2, card_y + card_h - 30, org[:32])
+    c.setFont("Helvetica", 7.5)
     c.setFillColor(BLUE_LIGHT)
-    c.drawCentredString(card_x + card_w / 2, card_y + card_h - 54, "STUDENT IDENTITY CARD")
-    c.setFont("Helvetica", 7)
-    c.setFillColor(colors.HexColor("#94a3b8"))
-    c.drawCentredString(card_x + card_w / 2, card_y + card_h - 70, f"Academic Session  {session}")
+    c.drawCentredString(card_x + card_w / 2, card_y + card_h - 46, "STUDENT IDENTITY CARD")
 
-    # ===== PHOTO =====
-    photo_x, photo_y = card_x + 28, card_y + 300
-    photo_w, photo_h = 96, 110
-    # outer frame
-    c.setFillColor(SILVER)
-    c.setStrokeColor(BLUE)
-    c.setLineWidth(1.5)
-    c.roundRect(photo_x - 2, photo_y - 2, photo_w + 4, photo_h + 4, 8, fill=1, stroke=1)
+    # Academic session as rounded pill/badge
+    sess_text = f"Session  {session}"
+    sess_w = c.stringWidth(sess_text, "Helvetica", 7) + 18
+    sess_x = card_x + (card_w - sess_w) / 2
+    sess_y = card_y + card_h - 66
+    c.setFillColor(colors.HexColor("#1e3a5f"))
+    c.roundRect(sess_x, sess_y - 3, sess_w, 14, 7, fill=1, stroke=0)
+    c.setFillColor(BLUE_LIGHT)
+    c.setFont("Helvetica", 7)
+    c.drawCentredString(card_x + card_w / 2, sess_y, sess_text)
+
+    # ===== PHOTO with clean accent border =====
+    photo_x, photo_y = card_x + 22, card_y + 318
+    photo_w, photo_h = 98, 114
+    # outer accent frame
+    c.setFillColor(BLUE)
+    c.roundRect(photo_x - 3, photo_y - 3, photo_w + 6, photo_h + 6, 8, fill=1, stroke=0)
+    c.setFillColor(WHITE)
+    c.roundRect(photo_x - 1, photo_y - 1, photo_w + 2, photo_h + 2, 7, fill=1, stroke=0)
     c.setFillColor(colors.HexColor("#e2e8f0"))
     c.roundRect(photo_x, photo_y, photo_w, photo_h, 6, fill=1, stroke=0)
     photo_drawn = False
@@ -265,18 +277,26 @@ def generate_id_card(student_id, name, cls, out_path, father_name="", dob="", ph
         c.setFont("Helvetica", 9)
         c.drawCentredString(photo_x + photo_w / 2, photo_y + photo_h / 2 - 4, "PHOTO")
 
-    # ===== DETAILS (right of photo) — no DOB; includes Emergency =====
-    dx = photo_x + photo_w + 16
-    dy = photo_y + photo_h - 6
+    # ===== DETAILS (right of photo) — clear spacing, readable labels =====
+    # Leave room for QR on the far right so labels never collide
+    dx = photo_x + photo_w + 14
+    dy = photo_y + photo_h - 2
+    # Max value width stops before the QR zone
+    max_val_w = (card_x + card_w - 78) - dx - 4
 
-    def detail(label, value, dy):
-        c.setFont("Helvetica", 6.5)
+    def detail(label, value, dy, step=32):
+        # Label: slightly larger + darker so "STUDENT ID" etc. are clearly visible
+        c.setFont("Helvetica", 7)
         c.setFillColor(MUTED)
         c.drawString(dx, dy, str(label).upper())
-        c.setFont("Helvetica-Bold", 9.5)
+        # Value below label with clear gap
+        c.setFont("Helvetica-Bold", 10)
         c.setFillColor(NAVY)
-        c.drawString(dx, dy - 12, str(value or "-")[:24])
-        return dy - 30
+        val = str(value or "—")
+        while c.stringWidth(val, "Helvetica-Bold", 10) > max_val_w and len(val) > 4:
+            val = val[:-2] + "…"
+        c.drawString(dx, dy - 13, val)
+        return dy - step
 
     dy = detail("Student ID", student_id, dy)
     dy = detail("Name", name, dy)
@@ -287,40 +307,40 @@ def generate_id_card(student_id, name, cls, out_path, father_name="", dob="", ph
 
     # ===== META ROW =====
     c.setStrokeColor(SILVER_BORDER)
-    c.setLineWidth(0.8)
-    c.line(card_x + 22, card_y + 278, card_x + card_w - 22, card_y + 278)
+    c.setLineWidth(0.7)
+    c.line(card_x + 18, card_y + 296, card_x + card_w - 18, card_y + 296)
 
-    c.setFont("Helvetica", 7)
+    c.setFont("Helvetica", 6.5)
     c.setFillColor(MUTED)
-    c.drawString(card_x + 28, card_y + 258, f"Issued: {issue_date}")
+    c.drawString(card_x + 24, card_y + 278, f"Issued: {issue_date}")
     school_bits = " · ".join(x for x in [b.get("phone"), b.get("address")] if x)
     if school_bits:
-        c.drawString(card_x + 28, card_y + 244, school_bits[:50])
+        c.drawString(card_x + 24, card_y + 264, school_bits[:52])
 
-    # Small QR (secondary)
+    # Small QR — placed below meta so it never covers detail labels
     qr = _qr_image_reader(str(student_id))
     if qr:
         c.setStrokeColor(SILVER_BORDER)
         c.setLineWidth(0.5)
         c.setFillColor(WHITE)
-        c.roundRect(card_x + card_w - 78, card_y + 230, 54, 54, 4, fill=1, stroke=1)
-        c.drawImage(qr, card_x + card_w - 76, card_y + 232, width=50, height=50)
+        c.roundRect(card_x + card_w - 72, card_y + 248, 48, 48, 4, fill=1, stroke=1)
+        c.drawImage(qr, card_x + card_w - 70, card_y + 250, width=44, height=44)
 
     # ===== BOTTOM BARCODE STRIP (primary scan target) =====
-    strip_h = 86
-    c.setFillColor(colors.HexColor("#f8fafc"))
-    c.rect(card_x + 1.8, card_y + 1.8, card_w - 3.6, strip_h, fill=1, stroke=0)
+    strip_h = 90
+    c.setFillColor(SILVER)
+    c.rect(card_x + 1.5, card_y + 1.5, card_w - 3.0, strip_h, fill=1, stroke=0)
     c.setStrokeColor(SILVER_BORDER)
-    c.setLineWidth(0.7)
-    c.line(card_x + 16, card_y + strip_h, card_x + card_w - 16, card_y + strip_h)
+    c.setLineWidth(0.6)
+    c.line(card_x + 14, card_y + strip_h, card_x + card_w - 14, card_y + strip_h)
 
-    c.setFont("Helvetica-Bold", 6.5)
+    c.setFont("Helvetica-Bold", 6)
     c.setFillColor(BLUE)
     c.drawCentredString(card_x + card_w / 2, card_y + strip_h - 12, "▼  SCAN BARCODE FOR ATTENDANCE  ▼")
 
     barcode_img = _barcode_image_reader(str(student_id), module_height=15.0)
-    bar_w, bar_h = card_w - 56, 46
-    bar_x = card_x + 28
+    bar_w, bar_h = card_w - 52, 44
+    bar_x = card_x + 26
     bar_y = card_y + 24
     if barcode_img:
         c.drawImage(
@@ -329,20 +349,20 @@ def generate_id_card(student_id, name, cls, out_path, father_name="", dob="", ph
         )
     else:
         c.setFillColor(NAVY)
-        c.roundRect(bar_x, bar_y + 6, bar_w, 32, 4, fill=1, stroke=0)
+        c.roundRect(bar_x, bar_y + 6, bar_w, 30, 4, fill=1, stroke=0)
         c.setFillColor(WHITE)
         c.setFont("Helvetica-Bold", 10)
-        c.drawCentredString(card_x + card_w / 2, bar_y + 16, f"* {student_id} *")
+        c.drawCentredString(card_x + card_w / 2, bar_y + 15, f"* {student_id} *")
 
     c.setFillColor(NAVY)
-    c.setFont("Helvetica-Bold", 10)
+    c.setFont("Helvetica-Bold", 9)
     c.drawCentredString(card_x + card_w / 2, card_y + 10, str(student_id))
 
     # Outside-card notes
     c.setFont("Helvetica-Oblique", 8)
     c.setFillColor(MUTED)
-    c.drawCentredString(306, 232, "This card is property of the school. If found, please return to the office.")
-    c.drawCentredString(306, 218, "Scan the barcode strip at the bottom to mark student attendance.")
+    c.drawCentredString(306, 208, "This card is property of the school. If found, please return to the office.")
+    c.drawCentredString(306, 194, "Scan the barcode strip at the bottom to mark student attendance.")
 
     c.save()
     return out_path
@@ -353,36 +373,74 @@ def generate_id_card(student_id, name, cls, out_path, father_name="", dob="", ph
 # ===========================================================================
 def generate_fee_receipt(receipt_no, student_id, name, father_name, cls, total_fee, previous_paid,
                          current_payment, balance, payment_date, received_by, out_path,
-                         payment_method="Cash"):
+                         payment_method="Cash", admission_fee=None, admission_fee_paid=None,
+                         monthly_fee=None, fee_type_label=None, line_items=None):
+    """Professional fee receipt.
+
+    Optional breakout (backward-compatible):
+      - admission_fee / admission_fee_paid — one-time admission fee amounts
+      - monthly_fee — recurring monthly amount (defaults to total_fee)
+      - fee_type_label — e.g. "Monthly Fee" or "Admission Fee"
+      - line_items — list of (description, amount) for custom rows
+    """
     c = canvas.Canvas(out_path, pagesize=letter)
     y = _draw_page_header(c, "FEE PAYMENT RECEIPT")
 
-    # Receipt meta box (right)
+    # ---- Receipt meta box: far-right, fixed width, never overlaps student block ----
+    box_x, box_w, box_h = 415, 145, 58
     c.setFillColor(SILVER)
-    c.roundRect(380, y - 10, 180, 52, 6, fill=1, stroke=0)
+    c.setStrokeColor(SILVER_BORDER)
+    c.setLineWidth(0.9)
+    c.roundRect(box_x, y - 14, box_w, box_h, 6, fill=1, stroke=1)
     c.setFillColor(MUTED)
-    c.setFont("Helvetica", 8)
-    c.drawString(392, y + 26, "RECEIPT NO.")
+    c.setFont("Helvetica", 7)
+    c.drawString(box_x + 10, y + 28, "RECEIPT NO.")
     c.setFillColor(NAVY)
-    c.setFont("Helvetica-Bold", 11)
-    c.drawString(392, y + 12, str(receipt_no))
+    c.setFont("Helvetica-Bold", 10)
+    # Truncate long receipt numbers so they stay inside the box
+    rno = str(receipt_no)
+    while c.stringWidth(rno, "Helvetica-Bold", 10) > (box_w - 20) and len(rno) > 6:
+        rno = rno[:-2] + "…"
+    c.drawString(box_x + 10, y + 14, rno)
     c.setFillColor(MUTED)
-    c.setFont("Helvetica", 8)
-    c.drawString(392, y - 2, f"Date: {payment_date}")
+    c.setFont("Helvetica", 7)
+    c.drawString(box_x + 10, y, f"Date: {payment_date}")
 
-    # Student block
+    # ---- Student block (left only — values capped so they never reach the box) ----
     c.setFont("Helvetica-Bold", 10)
     c.setFillColor(NAVY)
     c.drawString(50, y + 30, "Student Details")
     y -= 8
-    y = _kv_row(c, 50, y, "Student ID", student_id)
-    y = _kv_row(c, 50, y, "Student Name", name)
-    y = _kv_row(c, 50, y, "Father / Guardian", father_name or "-")
-    y = _kv_row(c, 50, y, "Class / Section", cls or "-")
 
-    y -= 8
+    # Custom kv that truncates values before they hit the receipt box
+    def kv(label, value, y_pos):
+        c.setFont("Helvetica", 10)
+        c.setFillColor(MUTED)
+        c.drawString(50, y_pos, str(label))
+        c.setFillColor(BLACK)
+        c.setFont("Helvetica-Bold", 10)
+        val = str(value)[:36]
+        # Hard stop: value must end before box_x - 12
+        max_w = box_x - 12 - (50 + 110)
+        while c.stringWidth(val, "Helvetica-Bold", 10) > max_w and len(val) > 4:
+            val = val[:-2] + "…"
+        c.drawString(50 + 110, y_pos, val)
+        return y_pos - 16
+
+    y = kv("Student ID", student_id, y)
+    y = kv("Student Name", name, y)
+    y = kv("Father / Guardian", father_name or "-", y)
+    y = kv("Class / Section", cls or "-", y)
+    if fee_type_label:
+        y = kv("Fee Type", fee_type_label, y)
+
+    y -= 10
+    # Soft dotted section divider
     c.setStrokeColor(SILVER_BORDER)
+    c.setDash(1, 3)
+    c.setLineWidth(0.7)
     c.line(50, y, 560, y)
+    c.setDash()
     y -= 24
 
     # Fee table header
@@ -394,25 +452,44 @@ def generate_fee_receipt(receipt_no, student_id, name, father_name, cls, total_f
     c.drawRightString(540, y + 2, "AMOUNT (Rs.)")
     y -= 28
 
-    rows = [
-        ("Total Fee (this cycle / overall)", total_fee),
-        ("Previously Paid", previous_paid),
-        ("Current Payment Received", current_payment),
-        ("Remaining Balance", balance),
-    ]
-    c.setFont("Helvetica", 10)
+    if line_items is not None:
+        rows = list(line_items)
+    else:
+        has_admission = admission_fee is not None and float(admission_fee or 0) > 0
+        monthly_amt = monthly_fee if monthly_fee is not None else total_fee
+        if has_admission:
+            rows = [
+                ("Admission Fee (One-Time) — Charged", float(admission_fee or 0)),
+                ("Admission Fee (One-Time) — Paid", float(admission_fee_paid or 0)),
+                ("Monthly Fee — Charged", float(monthly_amt or 0)),
+                ("Previously Paid (Monthly)", float(previous_paid or 0)),
+                ("Current Payment Received", float(current_payment or 0)),
+                ("Remaining Balance", float(balance or 0)),
+            ]
+        else:
+            rows = [
+                ("Total Fee (this cycle / overall)", total_fee),
+                ("Previously Paid", previous_paid),
+                ("Current Payment Received", current_payment),
+                ("Remaining Balance", balance),
+            ]
+
     for i, (label, amt) in enumerate(rows):
         if i % 2 == 0:
             c.setFillColor(SILVER)
             c.rect(50, y - 4, 510, 18, fill=1, stroke=0)
         c.setFillColor(BLACK)
         c.setFont("Helvetica", 10)
-        c.drawString(62, y, label)
-        bold = label.startswith("Current") or label.startswith("Remaining")
+        c.drawString(62, y, str(label)[:48])
+        bold = (
+            str(label).startswith("Current")
+            or str(label).startswith("Remaining")
+            or "Paid" in str(label)
+        )
         c.setFont("Helvetica-Bold" if bold else "Helvetica", 10)
-        if label.startswith("Remaining"):
-            c.setFillColor(SUCCESS if balance <= 0 else DANGER)
-        c.drawRightString(540, y, f"{float(amt):,.2f}")
+        if str(label).startswith("Remaining"):
+            c.setFillColor(SUCCESS if float(balance or 0) <= 0 else DANGER)
+        c.drawRightString(540, y, f"{float(amt or 0):,.2f}")
         c.setFillColor(BLACK)
         y -= 20
 
@@ -420,20 +497,32 @@ def generate_fee_receipt(receipt_no, student_id, name, father_name, cls, total_f
     c.setFillColor(MUTED)
     c.setFont("Helvetica", 9)
     c.drawString(62, y, f"Payment Method:  {payment_method}")
-    y -= 28
+    y -= 30
 
-    # Status banner
-    if balance <= 0:
-        c.setFillColor(SUCCESS)
+    # Modern pastel status badge
+    if float(balance or 0) <= 0:
+        c.setFillColor(SUCCESS_BG)
+        c.setStrokeColor(SUCCESS)
         banner = "✓  PAID IN FULL"
+        text_col = SUCCESS
     else:
-        c.setFillColor(WARNING)
+        c.setFillColor(WARNING_BG)
+        c.setStrokeColor(WARNING)
         banner = f"BALANCE DUE:  Rs. {float(balance):,.2f}"
-    c.roundRect(50, y - 6, 510, 26, 6, fill=1, stroke=0)
-    c.setFillColor(WHITE)
+        text_col = WARNING
+    c.setLineWidth(1.0)
+    c.roundRect(50, y - 6, 510, 28, 8, fill=1, stroke=1)
+    c.setFillColor(text_col)
     c.setFont("Helvetica-Bold", 12)
     c.drawCentredString(305, y + 2, banner)
-    y -= 50
+    y -= 52
+
+    # Soft dotted divider before signature
+    c.setStrokeColor(SILVER_BORDER)
+    c.setDash(1, 3)
+    c.setLineWidth(0.6)
+    c.line(50, y + 18, 560, y + 18)
+    c.setDash()
 
     # Signature line
     c.setStrokeColor(MUTED)
@@ -449,6 +538,46 @@ def generate_fee_receipt(receipt_no, student_id, name, father_name, cls, total_f
     _draw_page_footer(c)
     c.save()
     return out_path
+
+
+def get_admission_fee_status(student_id):
+    """Return dict with charged/paid/status for one-time admission fee, or None."""
+    try:
+        import db as _db
+        row = _db.run(
+            """SELECT charged_amount, paid_amount, status
+               FROM admission_fee_ledger WHERE student_id=?""",
+            (student_id,), fetchone=True,
+        )
+        if row:
+            return {
+                "charged": float(row[0] or 0),
+                "paid": float(row[1] or 0),
+                "status": row[2] or "Pending",
+                "pending": max(0.0, float(row[0] or 0) - float(row[1] or 0)),
+            }
+        row = _db.run(
+            """SELECT COALESCE(admission_fee,0), COALESCE(admission_fee_paid,0)
+               FROM student_admission_extra WHERE student_id=?""",
+            (student_id,), fetchone=True,
+        )
+        if row and (float(row[0] or 0) > 0 or float(row[1] or 0) > 0):
+            charged, paid = float(row[0] or 0), float(row[1] or 0)
+            if paid >= charged and charged > 0:
+                status = "Paid"
+            elif paid > 0:
+                status = "Partial"
+            else:
+                status = "Pending"
+            return {
+                "charged": charged,
+                "paid": paid,
+                "status": status,
+                "pending": max(0.0, charged - paid),
+            }
+    except Exception:
+        pass
+    return None
 
 
 # ===========================================================================

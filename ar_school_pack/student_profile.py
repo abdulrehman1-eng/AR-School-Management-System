@@ -120,17 +120,36 @@ class StudentProfileWindow:
 
         (s_id, name, father_name, dob, phone, address, class_sec, photo_path,
          prev_edu, total_fee, paid_fee, status) = row
-        extra = db.run(
-            "SELECT gender, blood_group, nationality, religion, mother_name, guardian_name, guardian_cnic, "
-            "occupation, alt_phone, email, current_address, city, area, admission_date, academic_year, "
-            "admission_type, emergency_contact_name, emergency_contact_phone, emergency_relationship, "
-            "emergency_notes FROM student_admission_extra WHERE student_id=?", (s_id,), fetchone=True,
-        )
         extra_keys = ["gender", "blood_group", "nationality", "religion", "mother_name", "guardian_name",
                       "guardian_cnic", "occupation", "alt_phone", "email", "current_address", "city", "area",
                       "admission_date", "academic_year", "admission_type", "emergency_contact_name",
-                      "emergency_contact_phone", "emergency_relationship", "emergency_notes"]
-        extra_dict = dict(zip(extra_keys, extra)) if extra else {k: "" for k in extra_keys}
+                      "emergency_contact_phone", "emergency_relationship", "emergency_notes",
+                      "admission_fee", "admission_fee_paid"]
+        extra = None
+        try:
+            extra = db.run(
+                "SELECT gender, blood_group, nationality, religion, mother_name, guardian_name, guardian_cnic, "
+                "occupation, alt_phone, email, current_address, city, area, admission_date, academic_year, "
+                "admission_type, emergency_contact_name, emergency_contact_phone, emergency_relationship, "
+                "emergency_notes, COALESCE(admission_fee,0), COALESCE(admission_fee_paid,0) "
+                "FROM student_admission_extra WHERE student_id=?", (s_id,), fetchone=True,
+            )
+        except Exception:
+            try:
+                extra_legacy = db.run(
+                    "SELECT gender, blood_group, nationality, religion, mother_name, guardian_name, guardian_cnic, "
+                    "occupation, alt_phone, email, current_address, city, area, admission_date, academic_year, "
+                    "admission_type, emergency_contact_name, emergency_contact_phone, emergency_relationship, "
+                    "emergency_notes FROM student_admission_extra WHERE student_id=?", (s_id,), fetchone=True,
+                )
+                if extra_legacy:
+                    extra = tuple(list(extra_legacy) + [0.0, 0.0])
+            except Exception:
+                extra = None
+        if extra:
+            extra_dict = dict(zip(extra_keys, extra))
+        else:
+            extra_dict = {k: (0.0 if k in ("admission_fee", "admission_fee_paid") else "") for k in extra_keys}
 
         self.student = {
             "student_id": s_id, "name": name, "father_name": father_name or "-", "dob": dob or "-",
@@ -155,10 +174,31 @@ class StudentProfileWindow:
         if not s:
             tk.Label(f, text="No student loaded.", bg=theme.WHITE).pack()
             return
+        # Quick fee snapshot for overview (full detail on Fees tab)
+        adm_status = "—"
+        try:
+            adm = reports.get_admission_fee_status(s["student_id"])
+            if adm and (adm["charged"] > 0 or adm["paid"] > 0):
+                adm_status = f"Rs. {adm['paid']:,.0f} / {adm['charged']:,.0f} ({adm['status']})"
+            elif float(s.get("admission_fee") or 0) > 0 or float(s.get("admission_fee_paid") or 0) > 0:
+                c = float(s.get("admission_fee") or 0)
+                pd = float(s.get("admission_fee_paid") or 0)
+                st = "Paid" if pd >= c and c > 0 else ("Partial" if pd > 0 else "Pending")
+                adm_status = f"Rs. {pd:,.0f} / {c:,.0f} ({st})"
+        except Exception:
+            pass
+        monthly_bal = float(s.get("total_fee") or 0) - float(s.get("paid_fee") or 0)
+        monthly_line = (
+            f"Rs. {float(s.get('paid_fee') or 0):,.0f} / {float(s.get('total_fee') or 0):,.0f}"
+            f"  (Balance: Rs. {monthly_bal:,.0f})"
+        )
+
         rows = [("Student Name", s["name"]), ("Student ID", s["student_id"]), ("Class / Section", s["class_sec"]),
                 ("Father / Guardian", s["father_name"]), ("Date of Birth", s["dob"]),
                 ("Admission Date", s.get("admission_date") or "-"), ("Status", s["status"]),
-                ("Emergency No.", s.get("emergency_contact_phone") or "-")]
+                ("Emergency No.", s.get("emergency_contact_phone") or "-"),
+                ("Admission Fee (One-Time)", adm_status),
+                ("Monthly Fee", monthly_line)]
         for i, (label, val) in enumerate(rows):
             tk.Label(f, text=f"{label}:", font=theme.FONT_BODY_BOLD, bg=theme.WHITE,
                      fg=theme.TEXT_MUTED).grid(row=i, column=0, sticky="w", pady=4)
@@ -352,28 +392,139 @@ class StudentProfileWindow:
         if not s:
             return
 
-        balance = s["total_fee"] - s["paid_fee"]
-        for label, val, color in [("Total Fee", f"Rs. {s['total_fee']:,.2f}", theme.TEXT_DARK),
-                                   ("Paid to Date", f"Rs. {s['paid_fee']:,.2f}", theme.SUCCESS),
-                                   ("Outstanding Balance", f"Rs. {balance:,.2f}",
-                                    theme.DANGER if balance > 0 else theme.SUCCESS)]:
+        # ---- Monthly Fee (from students.total_fee / paid_fee) ----
+        monthly_charged = float(s.get("total_fee") or 0)
+        monthly_paid = float(s.get("paid_fee") or 0)
+        monthly_balance = monthly_charged - monthly_paid
+        if monthly_charged <= 0:
+            monthly_status = "—"
+        elif monthly_balance <= 0:
+            monthly_status = "Paid"
+        elif monthly_paid > 0:
+            monthly_status = "Partial / Pending"
+        else:
+            monthly_status = "Pending"
+
+        # ---- One-time Admission Fee (ledger first, then extra columns) ----
+        adm = None
+        try:
+            adm = reports.get_admission_fee_status(s["student_id"])
+        except Exception:
+            adm = None
+        if not adm:
+            charged = float(s.get("admission_fee") or 0)
+            paid_adm = float(s.get("admission_fee_paid") or 0)
+            if charged > 0 or paid_adm > 0:
+                if paid_adm >= charged and charged > 0:
+                    st = "Paid"
+                elif paid_adm > 0:
+                    st = "Partial"
+                else:
+                    st = "Pending"
+                adm = {
+                    "charged": charged,
+                    "paid": paid_adm,
+                    "status": st,
+                    "pending": max(0.0, charged - paid_adm),
+                }
+
+        # Section: Admission Fee (One-Time)
+        tk.Label(f, text="Admission Fee (One-Time)", font=theme.FONT_H2, bg=theme.WHITE).pack(
+            anchor="w", pady=(0, 4)
+        )
+        if adm and (adm["charged"] > 0 or adm["paid"] > 0):
+            adm_rows = [
+                ("Charged", f"Rs. {adm['charged']:,.2f}", theme.TEXT_DARK),
+                ("Paid", f"Rs. {adm['paid']:,.2f}", theme.SUCCESS),
+                ("Pending", f"Rs. {adm['pending']:,.2f}",
+                 theme.DANGER if adm["pending"] > 0 else theme.SUCCESS),
+                ("Status", adm["status"], theme.SUCCESS if adm["status"] == "Paid" else theme.DANGER),
+            ]
+        else:
+            adm_rows = [
+                ("Charged", "Rs. 0.00", theme.TEXT_MUTED),
+                ("Paid", "Rs. 0.00", theme.TEXT_MUTED),
+                ("Status", "Not charged", theme.TEXT_MUTED),
+            ]
+        for label, val, color in adm_rows:
             row = tk.Frame(f, bg=theme.WHITE)
-            row.pack(fill=tk.X, pady=2)
+            row.pack(fill=tk.X, pady=1)
             tk.Label(row, text=label, font=theme.FONT_BODY, bg=theme.WHITE, fg=theme.TEXT_MUTED).pack(side=tk.LEFT)
             tk.Label(row, text=val, font=theme.FONT_BODY_BOLD, bg=theme.WHITE, fg=color).pack(side=tk.RIGHT)
 
-        tk.Label(f, text="Payment History", font=theme.FONT_H2, bg=theme.WHITE).pack(anchor="w", pady=(14, 6))
-        tree = ttk.Treeview(f, columns=("date", "amount", "method", "recorded_by", "description"),
-                             show="headings", height=10)
-        for c, w in [("date", 90), ("amount", 90), ("method", 90), ("recorded_by", 100), ("description", 260)]:
+        # Section: Monthly Fee
+        tk.Label(f, text="Monthly Fee", font=theme.FONT_H2, bg=theme.WHITE).pack(
+            anchor="w", pady=(14, 4)
+        )
+        for label, val, color in [
+            ("Charged (Monthly)", f"Rs. {monthly_charged:,.2f}", theme.TEXT_DARK),
+            ("Paid to Date", f"Rs. {monthly_paid:,.2f}", theme.SUCCESS),
+            ("Outstanding Balance", f"Rs. {monthly_balance:,.2f}",
+             theme.DANGER if monthly_balance > 0 else theme.SUCCESS),
+            ("Status", monthly_status,
+             theme.SUCCESS if monthly_status == "Paid" else theme.DANGER),
+        ]:
+            row = tk.Frame(f, bg=theme.WHITE)
+            row.pack(fill=tk.X, pady=1)
+            tk.Label(row, text=label, font=theme.FONT_BODY, bg=theme.WHITE, fg=theme.TEXT_MUTED).pack(side=tk.LEFT)
+            tk.Label(row, text=val, font=theme.FONT_BODY_BOLD, bg=theme.WHITE, fg=color).pack(side=tk.RIGHT)
+
+        # Combined revenue summary for this student
+        try:
+            fee_rev = db.run(
+                "SELECT COALESCE(SUM(amount),0) FROM accounting_revenue "
+                "WHERE student_id=? AND source_type='Student Fee'",
+                (s["student_id"],), fetchone=True,
+            )[0]
+            adm_rev = db.run(
+                "SELECT COALESCE(SUM(amount),0) FROM accounting_revenue "
+                "WHERE student_id=? AND source_type='Admission Fee'",
+                (s["student_id"],), fetchone=True,
+            )[0]
+        except Exception:
+            fee_rev, adm_rev = 0.0, 0.0
+        tk.Label(f, text="Revenue recorded (Accounting)", font=theme.FONT_H2, bg=theme.WHITE).pack(
+            anchor="w", pady=(14, 4)
+        )
+        for label, val, color in [
+            ("Monthly Fee Revenue", f"Rs. {float(fee_rev):,.2f}", theme.TEXT_DARK),
+            ("Admission Fee Revenue", f"Rs. {float(adm_rev):,.2f}", theme.TEXT_DARK),
+            ("Total Fee Revenue", f"Rs. {float(fee_rev) + float(adm_rev):,.2f}", theme.BRAND_BLUE),
+        ]:
+            row = tk.Frame(f, bg=theme.WHITE)
+            row.pack(fill=tk.X, pady=1)
+            tk.Label(row, text=label, font=theme.FONT_BODY, bg=theme.WHITE, fg=theme.TEXT_MUTED).pack(side=tk.LEFT)
+            tk.Label(row, text=val, font=theme.FONT_BODY_BOLD, bg=theme.WHITE, fg=color).pack(side=tk.RIGHT)
+
+        tk.Label(f, text="Payment History (Monthly + Admission Fee)", font=theme.FONT_H2,
+                 bg=theme.WHITE).pack(anchor="w", pady=(14, 6))
+        tree = ttk.Treeview(
+            f,
+            columns=("date", "type", "amount", "method", "recorded_by", "description"),
+            show="headings",
+            height=10,
+        )
+        for c, w in [
+            ("date", 90), ("type", 110), ("amount", 90),
+            ("method", 80), ("recorded_by", 100), ("description", 220),
+        ]:
             tree.heading(c, text=c.replace("_", " ").title())
             tree.column(c, width=w, anchor="center" if c != "description" else "w")
         tree.pack(fill=tk.BOTH, expand=True)
         history = db.run(
-            "SELECT date, amount, payment_method, recorded_by, description FROM accounting_revenue "
-            "WHERE source_type='Student Fee' AND student_id=? ORDER BY id DESC", (s["student_id"],), fetchall=True)
-        for d, amt, method, by, desc in history:
-            tree.insert("", tk.END, values=(d, f"Rs. {amt:,.0f}", method or "-", by or "-", desc or ""))
+            "SELECT date, source_type, amount, payment_method, recorded_by, description "
+            "FROM accounting_revenue "
+            "WHERE student_id=? AND source_type IN ('Student Fee', 'Admission Fee') "
+            "ORDER BY id DESC",
+            (s["student_id"],),
+            fetchall=True,
+        )
+        for d, src, amt, method, by, desc in history:
+            type_label = "Admission Fee" if src == "Admission Fee" else "Monthly Fee"
+            tree.insert(
+                "", tk.END,
+                values=(d, type_label, f"Rs. {amt:,.0f}", method or "-", by or "-", desc or ""),
+            )
 
     # ------------------------------------------------------------------
     # Personal

@@ -1397,6 +1397,13 @@ class StudentManagementApp:
         duplicate accounting entry; see reports.generate_fee_receipt()."""
         balance = total_fee - (previous_paid + current_payment)
         receipt_no = f"RCPT-{s_id}-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+        # Optional one-time admission fee breakout for the PDF lines.
+        try:
+            _adm = reports.get_admission_fee_status(s_id)
+        except Exception:
+            _adm = None
+        _adm_fee = _adm["charged"] if _adm else None
+        _adm_paid = _adm["paid"] if _adm else None
 
         win = tk.Toplevel(self.root)
         win.title("Fee Payment Recorded")
@@ -1408,9 +1415,13 @@ class StudentManagementApp:
 
         def do_view():
             out_path = os.path.join(os.getcwd(), f"Fee_Receipt_{s_id}_{datetime.now().strftime('%Y%m%d%H%M%S')}.pdf")
-            reports.generate_fee_receipt(receipt_no, s_id, name, father_name, cls, total_fee, previous_paid,
-                                          current_payment, balance, datetime.now().strftime("%Y-%m-%d"),
-                                          self.current_user, out_path)
+            reports.generate_fee_receipt(
+                receipt_no, s_id, name, father_name, cls, total_fee, previous_paid,
+                current_payment, balance, datetime.now().strftime("%Y-%m-%d"),
+                self.current_user, out_path,
+                admission_fee=_adm_fee, admission_fee_paid=_adm_paid,
+                monthly_fee=total_fee,
+            )
             log_activity(self.current_user, f"Generated fee receipt for {s_id}")
             # Best-effort open in the OS default PDF viewer so the user can
             # print from there — we don't pretend to control a physical
@@ -1440,9 +1451,13 @@ class StudentManagementApp:
                                                  filetypes=[("PDF Files", "*.pdf")])
             if not path:
                 return
-            reports.generate_fee_receipt(receipt_no, s_id, name, father_name, cls, total_fee, previous_paid,
-                                          current_payment, balance, datetime.now().strftime("%Y-%m-%d"),
-                                          self.current_user, path)
+            reports.generate_fee_receipt(
+                receipt_no, s_id, name, father_name, cls, total_fee, previous_paid,
+                current_payment, balance, datetime.now().strftime("%Y-%m-%d"),
+                self.current_user, path,
+                admission_fee=_adm_fee, admission_fee_paid=_adm_paid,
+                monthly_fee=total_fee,
+            )
             log_activity(self.current_user, f"Saved fee receipt for {s_id} to {path}")
             messagebox.showinfo("Saved", f"Receipt saved:\n{path}")
             win.destroy()

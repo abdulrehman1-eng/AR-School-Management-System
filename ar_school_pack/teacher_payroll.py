@@ -103,6 +103,16 @@ class TeacherPayrollWindow:
         self.current_user = current_user
 
         self.can_add_teacher = rbac.can(user_role, "teacher.add")
+        # Prefer dedicated teacher.edit / teacher.delete when present in RBAC;
+        # fall back to teacher.add so Admin (and anyone who can register
+        # teachers) can still edit/delete — those permission keys are often
+        # missing from older RBAC matrices, which left the buttons permanently disabled.
+        self.can_edit_teacher = (
+            rbac.can(user_role, "teacher.edit") or rbac.can(user_role, "teacher.add")
+        )
+        self.can_delete_teacher = (
+            rbac.can(user_role, "teacher.delete") or rbac.can(user_role, "teacher.add")
+        )
         self.can_mark_attendance = rbac.can(user_role, "teacher.attendance.mark")
         self.can_view_salary = rbac.can(user_role, "teacher.salary.view")
         self.can_pay_salary = rbac.can(user_role, "teacher.salary.pay")
@@ -241,16 +251,34 @@ class TeacherPayrollWindow:
         search_bar.pack(fill=tk.X, padx=16, pady=(0, 8))
         tk.Label(search_bar, text="🔍 Search:", font=("Segoe UI", 9), bg=self.CARD, fg=self.MUTED).pack(side=tk.LEFT)
         self.ent_tch_search = tk.Entry(search_bar, font=("Segoe UI", 9), relief="solid", bd=1)
-        self.ent_tch_search.pack(side=tk.LEFT, padx=(6, 8), ipady=3, fill=tk.X, expand=True)
+        self.ent_tch_search.pack(side=tk.LEFT, padx=(6, 4), ipady=3, fill=tk.X, expand=True)
+        self.ent_tch_search.bind("<Return>", lambda e: self.load_teacher_table())
         self.ent_tch_search.bind("<KeyRelease>", lambda e: self.load_teacher_table())
+
+        tk.Button(search_bar, text="🔍 Search", command=self.load_teacher_table,
+                  bg="#64748b", fg="white", relief="flat", padx=10, pady=4,
+                  font=("Segoe UI", 8, "bold"), cursor="hand2").pack(side=tk.LEFT, padx=(0, 8))
+
         view_profile_btn = tk.Button(search_bar, text="👤 View Profile", command=self.open_teacher_profile,
                                       bg=self.BLUE, fg="white", relief="flat", padx=12, pady=4,
                                       font=("Segoe UI", 8, "bold"), cursor="hand2")
-        view_profile_btn.pack(side=tk.LEFT)
+        view_profile_btn.pack(side=tk.LEFT, padx=(0, 6))
         if not rbac.can(self.user_role, "teacher.view"):
             view_profile_btn.config(state="disabled")
 
-        tk.Label(right, text="Search by Teacher ID or Name · click a row to load it into the form / attendance / payroll tabs · select a row and click 'View Profile' for full attendance & salary history.",
+        edit_btn = tk.Button(search_bar, text="✏️ Edit", command=self.edit_selected_teacher,
+                              bg="#64748b", fg="white", relief="flat", padx=12, pady=4,
+                              font=("Segoe UI", 8, "bold"), cursor="hand2")
+        edit_btn.pack(side=tk.LEFT, padx=(0, 6))
+        edit_btn.config(state="normal" if self.can_edit_teacher else "disabled")
+
+        delete_btn = tk.Button(search_bar, text="🗑 Delete", command=self.delete_selected_teacher,
+                                bg=self.RED, fg="white", relief="flat", padx=12, pady=4,
+                                font=("Segoe UI", 8, "bold"), cursor="hand2")
+        delete_btn.pack(side=tk.LEFT)
+        delete_btn.config(state="normal" if self.can_delete_teacher else "disabled")
+
+        tk.Label(right, text="Search by Teacher ID or Name · click a row to load it into the form / attendance / payroll tabs · select a row then Edit / Delete / View Profile.",
                  font=("Segoe UI", 8), bg=self.CARD, fg=self.MUTED, wraplength=680, justify="left").pack(anchor="w", padx=16, pady=(0, 8))
 
         table_frame = tk.Frame(right, bg=self.CARD)
@@ -325,6 +353,189 @@ class TeacherPayrollWindow:
         self.lbl_tch_id.config(text=generate_next_teacher_id())
         for ent in [self.ent_tch_name, self.ent_tch_desig, self.ent_tch_phone, self.ent_tch_sal, self.ent_tch_join]:
             ent.delete(0, tk.END)
+
+    def _get_selected_teacher_id(self):
+        """Return (teacher_id, name) for the currently focused directory row, or (None, None)."""
+        selected = self.tree_teacher.focus()
+        vals = self.tree_teacher.item(selected, "values") if selected else ()
+        if not vals:
+            return None, None
+        return vals[0], vals[1] if len(vals) > 1 else ""
+
+    def edit_selected_teacher(self):
+        """Open a popup to edit the selected teacher's profile (teachers table)."""
+        if not (rbac.can(self.user_role, "teacher.edit") or rbac.can(self.user_role, "teacher.add")):
+            messagebox.showerror("Permission Denied", "You are not allowed to edit teachers.", parent=self.win)
+            return
+
+        t_id, _ = self._get_selected_teacher_id()
+        if not t_id:
+            messagebox.showinfo("Select Teacher", "Please select a teacher from the directory first.", parent=self.win)
+            return
+
+        row = db.run(
+            "SELECT teacher_id, name, designation, phone, basic_salary, joining_date FROM teachers WHERE teacher_id=?",
+            (t_id,), fetchone=True,
+        )
+        if not row:
+            messagebox.showerror("Error", "Teacher not found.", parent=self.win)
+            return
+
+        t_id, name, desig, phone, basic_sal, joining = row
+
+        edit_win = tk.Toplevel(self.win)
+        edit_win.title(f"Edit Teacher — {t_id}")
+        edit_win.geometry("520x560")
+        edit_win.minsize(460, 500)
+        edit_win.config(bg=self.BG)
+        edit_win.transient(self.win)
+        edit_win.grab_set()
+        edit_win.resizable(True, True)
+
+        header = tk.Frame(edit_win, bg=self.NAVY, padx=18, pady=12)
+        header.pack(side=tk.TOP, fill=tk.X)
+        tk.Label(header, text=f"✏️ EDIT TEACHER — {t_id}", font=("Segoe UI", 14, "bold"),
+                 bg=self.NAVY, fg="white").pack(anchor="w")
+        tk.Label(header, text="Update teacher profile details, then click Save Changes",
+                 font=("Segoe UI", 9), bg=self.NAVY, fg="#94a3b8").pack(anchor="w", pady=(2, 0))
+
+        # Footer with Save/Cancel MUST be packed with side=BOTTOM before the
+        # expanding form, otherwise the form eats all vertical space and the
+        # buttons disappear off-screen.
+        btn_row = tk.Frame(edit_win, bg=self.BG, padx=16, pady=14)
+        btn_row.pack(side=tk.BOTTOM, fill=tk.X)
+
+        form = tk.Frame(edit_win, bg=self.CARD, padx=20, pady=16)
+        form.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=12, pady=12)
+
+        fields = {}
+
+        def add_field(key, label, value="", state="normal"):
+            tk.Label(form, text=label, font=("Segoe UI", 8, "bold"), bg=self.CARD, fg=self.MUTED).pack(
+                anchor="w", pady=(6, 2))
+            ent = tk.Entry(form, font=("Segoe UI", 10), relief="solid", bd=1)
+            ent.pack(fill=tk.X, ipady=5)
+            ent.insert(0, "" if value is None else str(value))
+            if state != "normal":
+                ent.config(state=state)
+            fields[key] = ent
+            return ent
+
+        add_field("teacher_id", "Teacher ID", t_id, "disabled")
+        add_field("name", "Teacher Name *", name or "")
+        add_field("designation", "Designation", desig or "")
+        add_field("phone", "Phone Number", phone or "")
+        sal_state = "normal" if self.can_view_salary else "disabled"
+        add_field("basic_salary", "Basic Salary (Rs)", basic_sal if basic_sal is not None else "0", sal_state)
+        add_field("joining_date", "Joining Date (YYYY-MM-DD)", joining or "")
+
+        def do_save():
+            new_name = fields["name"].get().strip()
+            if not new_name:
+                messagebox.showerror("Required Fields", "Teacher Name is required.", parent=edit_win)
+                return
+
+            if self.can_view_salary:
+                sal, ok = safe_float(fields["basic_salary"].get(), "Basic Salary", default=0.0)
+                if not ok:
+                    return
+            else:
+                sal = float(basic_sal or 0)
+
+            try:
+                db.run(
+                    """UPDATE teachers SET
+                       name=?, designation=?, phone=?, basic_salary=?, joining_date=?
+                       WHERE teacher_id=?""",
+                    (
+                        new_name,
+                        fields["designation"].get().strip(),
+                        fields["phone"].get().strip(),
+                        sal,
+                        fields["joining_date"].get().strip(),
+                        t_id,
+                    ),
+                    commit=True,
+                )
+            except Exception as exc:
+                messagebox.showerror("Save Failed", f"Could not update teacher.\n\n{exc}", parent=edit_win)
+                return
+
+            log_activity(self.current_user, f"Updated teacher profile {new_name} ({t_id})")
+            self.load_teacher_table()
+            if self.lbl_tch_id.cget("text") == t_id:
+                self.ent_tch_name.delete(0, tk.END)
+                self.ent_tch_name.insert(0, new_name)
+                self.ent_tch_desig.delete(0, tk.END)
+                self.ent_tch_desig.insert(0, fields["designation"].get().strip())
+                self.ent_tch_phone.delete(0, tk.END)
+                self.ent_tch_phone.insert(0, fields["phone"].get().strip())
+                if self.can_view_salary:
+                    self.ent_tch_sal.delete(0, tk.END)
+                    self.ent_tch_sal.insert(0, str(sal))
+                    self.ent_tch_join.delete(0, tk.END)
+                    self.ent_tch_join.insert(0, fields["joining_date"].get().strip())
+            messagebox.showinfo("Updated", f"Teacher '{new_name}' ({t_id}) updated successfully.", parent=edit_win)
+            edit_win.destroy()
+
+        tk.Button(
+            btn_row, text="💾 Save Changes", command=do_save,
+            bg=self.GREEN, fg="white", relief="flat", padx=18, pady=10,
+            font=("Segoe UI", 10, "bold"), cursor="hand2",
+        ).pack(side=tk.LEFT)
+        tk.Button(
+            btn_row, text="Cancel", command=edit_win.destroy,
+            bg="#f1f5f9", fg=self.NAVY, relief="flat", padx=18, pady=10,
+            font=("Segoe UI", 10, "bold"), cursor="hand2",
+        ).pack(side=tk.LEFT, padx=10)
+
+    def delete_selected_teacher(self):
+        """Remove the selected teacher from the teachers table after confirmation."""
+        if not (rbac.can(self.user_role, "teacher.delete") or rbac.can(self.user_role, "teacher.add")):
+            messagebox.showerror("Permission Denied", "You are not allowed to delete teachers.", parent=self.win)
+            return
+
+        t_id, t_name = self._get_selected_teacher_id()
+        if not t_id:
+            messagebox.showinfo("Select Teacher", "Please select a teacher from the directory first.", parent=self.win)
+            return
+
+        confirm = messagebox.askyesno(
+            "Confirm Delete",
+            f"Permanently delete teacher record?\n\n"
+            f"Name: {t_name}\n"
+            f"Teacher ID: {t_id}\n\n"
+            "⚠️ This action cannot be undone.\n"
+            "(Attendance and salary history rows are not removed automatically.)",
+            icon="warning",
+            parent=self.win,
+        )
+        if not confirm:
+            return
+
+        try:
+            db.run("DELETE FROM teachers WHERE teacher_id=?", (t_id,), commit=True)
+            still_there = db.run(
+                "SELECT teacher_id FROM teachers WHERE teacher_id=?", (t_id,), fetchone=True,
+            )
+            if still_there:
+                raise RuntimeError("Teacher was not removed from the database.")
+
+            log_activity(self.current_user, f"Permanently removed teacher record {t_id} ({t_name})")
+            self.load_teacher_table()
+            if self.lbl_tch_id.cget("text") == t_id:
+                self.clear_teacher_form()
+            messagebox.showinfo(
+                "Teacher Removed",
+                f"Teacher '{t_name}' ({t_id}) has been removed successfully.",
+                parent=self.win,
+            )
+        except Exception as exc:
+            messagebox.showerror(
+                "Delete Failed",
+                f"Could not remove teacher.\n\nError:\n{exc}",
+                parent=self.win,
+            )
 
     # ------------------------------------------------------------
     # PAGE 2: Daily Attendance

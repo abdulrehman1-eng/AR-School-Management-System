@@ -32,6 +32,32 @@ def record_fee_revenue(role, student_id, amount, recorded_by, description="Fee p
     )
 
 
+def record_admission_fee_revenue(role, student_id, amount, recorded_by,
+                                 description="One-time admission fee", payment_method="Cash"):
+    """Post one-time Admission Fee into accounting_revenue.
+
+    Kept separate from monthly 'Student Fee' so dashboards and student
+    profile can split Admission Fee vs Monthly Fee revenue. Uses the same
+    student.fee.edit gate as regular fee collection (admission staff already
+    has it), not the stricter accounting.revenue.add permission.
+    """
+    if amount <= 0:
+        return
+    # Prefer fee-edit; fall back to revenue.add for pure finance roles.
+    try:
+        rbac.require(role, "student.fee.edit")
+    except Exception:
+        rbac.require(role, "accounting.revenue.add")
+    db.run(
+        """INSERT INTO accounting_revenue
+           (source_type, student_id, amount, date, description, reference, payment_method, recorded_by)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        ("Admission Fee", student_id, amount, datetime.now().strftime("%Y-%m-%d"),
+         description, f"ADM-{student_id}", payment_method, recorded_by),
+        commit=True,
+    )
+
+
 def add_revenue(role, source_type, amount, description, reference, payment_method, recorded_by, student_id=None):
     rbac.require(role, "accounting.revenue.add")
     db.run(
