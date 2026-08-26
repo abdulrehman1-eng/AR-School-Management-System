@@ -1,14 +1,19 @@
-
-import os
 import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
+from tkinter import ttk, messagebox
 from datetime import datetime
 
 import db
 import rbac
-import results_engine
 import reports
 import theme
+
+MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July",
+               "August", "September", "October", "November", "December"]
+
+STATUS_COLORS = {
+    "PAID": theme.SUCCESS, "ADVANCE": theme.INFO, "PARTIAL": theme.WARNING,
+    "OVERDUE": theme.DANGER, "PENDING": theme.TEXT_MUTED
+}
 
 
 class StudentProfileWindow:
@@ -25,7 +30,7 @@ class StudentProfileWindow:
 
         self.win = tk.Toplevel(parent)
         self.win.title("Student Profile")
-        self.win.geometry("900x720")
+        self.win.geometry("920x750")
         self.win.config(bg=theme.SILVER)
         self.win.transient(parent)
 
@@ -64,8 +69,6 @@ class StudentProfileWindow:
         self.tab_results = tk.Frame(self.notebook, bg=theme.WHITE)
         self.tab_fees = tk.Frame(self.notebook, bg=theme.WHITE)
         self.tab_personal = tk.Frame(self.notebook, bg=theme.WHITE)
-        # Tabs are (re)added in search_student() based on live rbac.can()
-        # checks for the CURRENT role, never fixed at window-open time.
 
     def _rebuild_tabs(self):
         for tab_id in self.notebook.tabs():
@@ -135,17 +138,8 @@ class StudentProfileWindow:
                 "FROM student_admission_extra WHERE student_id=?", (s_id,), fetchone=True,
             )
         except Exception:
-            try:
-                extra_legacy = db.run(
-                    "SELECT gender, blood_group, nationality, religion, mother_name, guardian_name, guardian_cnic, "
-                    "occupation, alt_phone, email, current_address, city, area, admission_date, academic_year, "
-                    "admission_type, emergency_contact_name, emergency_contact_phone, emergency_relationship, "
-                    "emergency_notes FROM student_admission_extra WHERE student_id=?", (s_id,), fetchone=True,
-                )
-                if extra_legacy:
-                    extra = tuple(list(extra_legacy) + [0.0, 0.0])
-            except Exception:
-                extra = None
+            extra = None
+        
         if extra:
             extra_dict = dict(zip(extra_keys, extra))
         else:
@@ -174,361 +168,423 @@ class StudentProfileWindow:
         if not s:
             tk.Label(f, text="No student loaded.", bg=theme.WHITE).pack()
             return
-        # Quick fee snapshot for overview (full detail on Fees tab)
+
         adm_status = "—"
         try:
             adm = reports.get_admission_fee_status(s["student_id"])
             if adm and (adm["charged"] > 0 or adm["paid"] > 0):
                 adm_status = f"Rs. {adm['paid']:,.0f} / {adm['charged']:,.0f} ({adm['status']})"
-            elif float(s.get("admission_fee") or 0) > 0 or float(s.get("admission_fee_paid") or 0) > 0:
-                c = float(s.get("admission_fee") or 0)
-                pd = float(s.get("admission_fee_paid") or 0)
-                st = "Paid" if pd >= c and c > 0 else ("Partial" if pd > 0 else "Pending")
-                adm_status = f"Rs. {pd:,.0f} / {c:,.0f} ({st})"
         except Exception:
             pass
-        monthly_bal = float(s.get("total_fee") or 0) - float(s.get("paid_fee") or 0)
-        monthly_line = (
-            f"Rs. {float(s.get('paid_fee') or 0):,.0f} / {float(s.get('total_fee') or 0):,.0f}"
-            f"  (Balance: Rs. {monthly_bal:,.0f})"
+
+        now = datetime.now()
+        curr_cycle = db.run(
+            "SELECT amount_due, amount_paid, status FROM fee_cycles "
+            "WHERE student_id=? AND billing_month=? AND billing_year=?",
+            (s["student_id"], now.month, now.year), fetchone=True
         )
+        if curr_cycle:
+            due, paid, st = curr_cycle
+            bal = max(0.0, (due or 0) - (paid or 0))
+            monthly_line = f"Rs. {paid:,.0f} / {due:,.0f} (Balance: Rs. {bal:,.0f}) [{st}]"
+        else:
+            monthly_line = f"No fee cycle generated for {MONTH_NAMES[now.month-1]} {now.year}"
 
         rows = [("Student Name", s["name"]), ("Student ID", s["student_id"]), ("Class / Section", s["class_sec"]),
                 ("Father / Guardian", s["father_name"]), ("Date of Birth", s["dob"]),
                 ("Admission Date", s.get("admission_date") or "-"), ("Status", s["status"]),
                 ("Emergency No.", s.get("emergency_contact_phone") or "-"),
                 ("Admission Fee (One-Time)", adm_status),
-                ("Monthly Fee", monthly_line)]
+                ("Current Month Fee", monthly_line)]
+
         for i, (label, val) in enumerate(rows):
             tk.Label(f, text=f"{label}:", font=theme.FONT_BODY_BOLD, bg=theme.WHITE,
                      fg=theme.TEXT_MUTED).grid(row=i, column=0, sticky="w", pady=4)
             tk.Label(f, text=str(val), font=theme.FONT_BODY, bg=theme.WHITE).grid(row=i, column=1, sticky="w",
                                                                                     padx=12, pady=4)
-        row_n = len(rows)
-        if s["photo_path"] and os.path.isfile(s["photo_path"]):
-            tk.Label(f, text=f"Photo on file: {s['photo_path']}", font=theme.FONT_SMALL, bg=theme.WHITE,
-                     fg=theme.TEXT_MUTED).grid(row=row_n, column=0, columnspan=2, sticky="w", pady=(10, 0))
-            row_n += 1
-
-        # Reprint / regenerate ID card for this student
-        btn_row = tk.Frame(f, bg=theme.WHITE)
-        btn_row.grid(row=row_n, column=0, columnspan=2, sticky="w", pady=(16, 4))
-        theme.primary_button(
-            btn_row, "🪪 Generate / Reprint ID Card", self._generate_id_card, bg=theme.BRAND_BLUE,
-        ).pack(side=tk.LEFT, padx=(0, 8))
-        theme.primary_button(
-            btn_row, "💾 Save ID Card As…", self._save_id_card_as, bg=theme.SLATE,
-        ).pack(side=tk.LEFT)
 
     # ------------------------------------------------------------------
-    # Attendance
+    # Fees Tab
     # ------------------------------------------------------------------
-    def _monthly_attendance(self, s_id, ym):
-        rows = db.run("SELECT date, status FROM attendance WHERE student_id=? AND date LIKE ? ORDER BY date",
-                       (s_id, f"{ym}%"), fetchall=True)
-        total_days = db.run("SELECT COUNT(DISTINCT date) FROM attendance WHERE date LIKE ?",
-                             (f"{ym}%",), fetchone=True)[0]
-        present = sum(1 for _, st in rows if st == "Present")
-        absent = sum(1 for _, st in rows if st == "Absent")
-        leave = sum(1 for _, st in rows if st == "Leave")
-        late = sum(1 for _, st in rows if st == "Late")
-        pct = (present / total_days * 100) if total_days else 0.0
-        return rows, total_days, present, absent, leave, late, pct
-
-    def _build_attendance_tab(self):
+    def _build_fees_tab(self):
         s = self.student
-        f = tk.Frame(self.tab_attendance, bg=theme.WHITE, padx=16, pady=12)
-        f.pack(fill=tk.BOTH, expand=True)
         if not s:
             return
 
-        ctrl = tk.Frame(f, bg=theme.WHITE)
-        ctrl.pack(fill=tk.X)
-        tk.Label(ctrl, text="Month:", bg=theme.WHITE, font=theme.FONT_SMALL).pack(side=tk.LEFT)
-        cmb_month = ttk.Combobox(ctrl, values=[f"{i:02d}" for i in range(1, 13)], width=5, state="readonly")
-        cmb_month.current(datetime.now().month - 1)
-        cmb_month.pack(side=tk.LEFT, padx=4)
-        ent_year = tk.Entry(ctrl, width=6)
-        ent_year.insert(0, str(datetime.now().year))
-        ent_year.pack(side=tk.LEFT, padx=4)
+        canvas = tk.Canvas(self.tab_fees, bg=theme.WHITE, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(self.tab_fees, orient="vertical", command=canvas.yview)
+        scroll_frame = tk.Frame(canvas, bg=theme.WHITE, padx=16, pady=12)
 
-        summary_lbl = tk.Label(f, text="", font=theme.FONT_BODY, bg=theme.WHITE, justify="left")
-        summary_lbl.pack(anchor="w", pady=(10, 6))
+        scroll_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=scroll_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
 
-        tree = ttk.Treeview(f, columns=("date", "status"), show="headings", height=10)
-        tree.heading("date", text="Date")
-        tree.heading("status", text="Status")
-        tree.pack(fill=tk.BOTH, expand=True)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
-        state = {}
+        now = datetime.now()
+        current_year = now.year
+        current_month = now.month
 
-        def load():
-            ym = f"{ent_year.get().strip()}-{cmb_month.get()}"
-            rows, total_days, present, absent, leave, late, pct = self._monthly_attendance(s["student_id"], ym)
-            summary_lbl.config(text=(f"{ym} — Working days: {total_days} | Present: {present} | Absent: {absent} | "
-                                      f"Leave: {leave} | Late: {late} | Attendance: {pct:.1f}%"))
-            tree.delete(*tree.get_children())
-            for d, st in rows:
-                tree.insert("", tk.END, values=(d, st))
-            state["last"] = (ym, total_days, present, absent, leave, late, pct, rows)
+        # Current Month Card
+        curr_cycle = db.run(
+            "SELECT fee_amount, discount, previous_balance, amount_due, amount_paid, status "
+            "FROM fee_cycles WHERE student_id=? AND billing_month=? AND billing_year=?",
+            (s["student_id"], current_month, current_year), fetchone=True
+        )
 
-        def export():
-            if "last" not in state:
-                load()
-            ym, total_days, present, absent, leave, late, pct, rows = state["last"]
-            out_path = os.path.join(os.getcwd(), f"Attendance_Report_{s['student_id']}_{ym}.pdf")
-            reports.generate_attendance_report(s["student_id"], s["name"], s["class_sec"], ym, total_days,
-                                                present, absent, leave, late, pct, rows, out_path)
-            messagebox.showinfo("Report Generated", f"Saved to:\n{out_path}", parent=self.win)
+        tk.Label(scroll_frame, text=f"📅 Current Month Fee Status ({MONTH_NAMES[current_month-1]} {current_year})",
+                 font=theme.FONT_H2, bg=theme.WHITE, fg=theme.TEXT_DARK).pack(anchor="w", pady=(0, 6))
 
-        btnrow = tk.Frame(ctrl, bg=theme.WHITE)
-        btnrow.pack(side=tk.LEFT, padx=10)
-        theme.primary_button(btnrow, "Load", load).pack(side=tk.LEFT, padx=2)
-        theme.primary_button(btnrow, "📄 Export PDF", export, bg=theme.SLATE).pack(side=tk.LEFT, padx=2)
-        load()
+        curr_card = tk.Frame(scroll_frame, bg=theme.WHITE, highlightbackground=theme.SILVER_BORDER, highlightthickness=1, padx=12, pady=8)
+        curr_card.pack(fill=tk.X, pady=(0, 14))
+
+        if curr_cycle:
+            fee_amt, disc, prev_bal, amt_due, amt_paid, status = curr_cycle
+            rem_bal = max(0.0, (amt_due or 0) - (amt_paid or 0))
+            
+            c_rows = [
+                ("Fee Amount", f"Rs. {fee_amt:,.2f}"),
+                ("Discount", f"Rs. {disc:,.2f}"),
+                ("Previous Balance", f"Rs. {prev_bal:,.2f}"),
+                ("Total Due", f"Rs. {amt_due:,.2f}"),
+                ("Amount Paid", f"Rs. {amt_paid:,.2f}"),
+                ("Remaining Balance", f"Rs. {rem_bal:,.2f}"),
+                ("Current Status", status)
+            ]
+            for i, (lbl, val) in enumerate(c_rows):
+                r, c = divmod(i, 2)
+                tk.Label(curr_card, text=f"{lbl}:", font=theme.FONT_SMALL, bg=theme.WHITE, fg=theme.TEXT_MUTED).grid(row=r, column=c*2, sticky="w", padx=(0, 4), pady=2)
+                fg_col = theme.DANGER if lbl == "Remaining Balance" and rem_bal > 0 else (theme.SUCCESS if lbl == "Current Status" and status == "PAID" else theme.TEXT_DARK)
+                tk.Label(curr_card, text=val, font=theme.FONT_BODY_BOLD, bg=theme.WHITE, fg=fg_col).grid(row=r, column=c*2+1, sticky="w", padx=(0, 30), pady=2)
+        else:
+            tk.Label(curr_card, text=f"No fee cycle generated for {MONTH_NAMES[current_month-1]} {current_year} yet.",
+                     font=theme.FONT_BODY, bg=theme.WHITE, fg=theme.TEXT_MUTED).pack(anchor="w")
+
+        # --------------------------------------------------------------
+        # Fee Cycles Table (Sirf Paid / Pending / Billed Mahine)
+        # --------------------------------------------------------------
+        tk.Label(scroll_frame, text=f"📊 Active Fee Cycles ({current_year})",
+                 font=theme.FONT_H2, bg=theme.WHITE, fg=theme.TEXT_DARK).pack(anchor="w", pady=(6, 6))
+
+        cols = ("month", "fee", "due", "paid", "balance", "status")
+        tree_12m = ttk.Treeview(scroll_frame, columns=cols, show="headings", height=8)
+        
+        headers = {"month": "Month", "fee": "Monthly Fee", "due": "Amount Due", "paid": "Paid Amount", "balance": "Balance", "status": "Status"}
+        widths = {"month": 110, "fee": 100, "due": 100, "paid": 100, "balance": 100, "status": 110}
+
+        for c in cols:
+            tree_12m.heading(c, text=headers[c])
+            tree_12m.column(c, width=widths[c], anchor="center")
+
+        for st, color in STATUS_COLORS.items():
+            tree_12m.tag_configure(st, foreground=color)
+
+        tree_12m.pack(fill=tk.X, pady=(0, 14))
+
+        # Sirf wahi records uthayega jinki entries fee_cycles db table mein mojud hain
+        cycles_12m = db.run(
+            "SELECT billing_month, fee_amount, amount_due, amount_paid, status "
+            "FROM fee_cycles WHERE student_id=? AND billing_year=? ORDER BY billing_month ASC",
+            (s["student_id"], current_year), fetchall=True
+        ) or []
+
+        if cycles_12m:
+            for m_idx, fee, due, paid, st in cycles_12m:
+                m_name = MONTH_NAMES[m_idx - 1] if 1 <= m_idx <= 12 else f"Month {m_idx}"
+                bal = max(0.0, (due or 0) - (paid or 0))
+                tree_12m.insert("", tk.END, tags=(st,),
+                                values=(m_name, f"Rs. {fee:,.0f}", f"Rs. {due:,.0f}", f"Rs. {paid:,.0f}", f"Rs. {bal:,.0f}", st))
+        else:
+            tree_12m.insert("", tk.END, values=("No records", "—", "—", "—", "—", "NO BILLING HISTORY"))
+
+        # Payment Receipts Logs
+        tk.Label(scroll_frame, text="🧾 Payment Receipts History Logs", font=theme.FONT_H2, bg=theme.WHITE).pack(anchor="w", pady=(6, 6))
+        tree_hist = ttk.Treeview(scroll_frame, columns=("date", "type", "amount", "method", "by", "desc"), show="headings", height=6)
+        for c, w in [("date", 90), ("type", 110), ("amount", 90), ("method", 80), ("by", 90), ("desc", 200)]:
+            tree_hist.heading(c, text=c.replace("_", " ").title())
+            tree_hist.column(c, width=w, anchor="center" if c != "desc" else "w")
+        tree_hist.pack(fill=tk.X, pady=(0, 10))
+
+        history = db.run(
+            "SELECT date, source_type, amount, payment_method, recorded_by, description "
+            "FROM accounting_revenue WHERE student_id=? AND source_type IN ('Student Fee', 'Admission Fee') ORDER BY id DESC",
+            (s["student_id"],), fetchall=True
+        ) or []
+        for d, src, amt, method, by, desc in history:
+            tree_hist.insert("", tk.END, values=(d, src, f"Rs. {amt:,.0f}", method or "-", by or "-", desc or ""))
 
     # ------------------------------------------------------------------
-    # Results
+    # Attendance helpers (personal monthly / yearly)
     # ------------------------------------------------------------------
+    @staticmethod
+    def _attendance_counts(student_id, year=None, month=None):
+        q = "SELECT status, COUNT(*) FROM attendance WHERE student_id=?"
+        params = [student_id]
+        if year and month:
+            q += " AND date LIKE ?"
+            params.append(f"{year}-{month:02d}%")
+        elif year:
+            q += " AND date LIKE ?"
+            params.append(f"{year}%")
+        q += " GROUP BY status"
+        rows = db.run(q, tuple(params), fetchall=True) or []
+        counts = {"Present": 0, "Absent": 0, "Leave": 0, "Late": 0}
+        for st, c in rows:
+            if st in counts:
+                counts[st] = int(c or 0)
+        total = sum(counts.values())
+        present_like = counts["Present"] + counts["Late"]
+        rate = (present_like / total * 100.0) if total else 0.0
+        counts["Total"] = total
+        counts["Rate"] = rate
+        return counts
+
+    @staticmethod
+    def _attendance_day_rows(student_id, year=None, month=None, limit=200):
+        q = (
+            "SELECT date, status, COALESCE(method,''), COALESCE(in_time,'') "
+            "FROM attendance WHERE student_id=?"
+        )
+        params = [student_id]
+        if year and month:
+            q += " AND date LIKE ?"
+            params.append(f"{year}-{month:02d}%")
+        elif year:
+            q += " AND date LIKE ?"
+            params.append(f"{year}%")
+        q += " ORDER BY date DESC LIMIT ?"
+        params.append(limit)
+        try:
+            return db.run(q, tuple(params), fetchall=True) or []
+        except Exception:
+            q2 = "SELECT date, status, COALESCE(method,''), '' FROM attendance WHERE student_id=?"
+            params2 = [student_id]
+            if year and month:
+                q2 += " AND date LIKE ?"
+                params2.append(f"{year}-{month:02d}%")
+            elif year:
+                q2 += " AND date LIKE ?"
+                params2.append(f"{year}%")
+            q2 += " ORDER BY date DESC LIMIT ?"
+            params2.append(limit)
+            return db.run(q2, tuple(params2), fetchall=True) or []
+
+    # ------------------------------------------------------------------
+    # Attendance Tab (personal monthly + yearly + Excel/PDF export)
+    # ------------------------------------------------------------------
+    def _build_attendance_tab(self):
+        s = self.student
+        if not s:
+            return
+
+        canvas = tk.Canvas(self.tab_attendance, bg=theme.WHITE, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(self.tab_attendance, orient="vertical", command=canvas.yview)
+        scroll = tk.Frame(canvas, bg=theme.WHITE, padx=16, pady=12)
+        scroll.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=scroll, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        now = datetime.now()
+        year_var = tk.StringVar(value=str(now.year))
+        month_var = tk.StringVar(value=str(now.month))
+        state = {"month_counts": {}, "year_counts": {}, "day_rows": [], "monthly_rows": []}
+
+        ctrl = tk.Frame(scroll, bg=theme.WHITE)
+        ctrl.pack(fill=tk.X, pady=(0, 10))
+        tk.Label(ctrl, text="Year:", font=theme.FONT_BODY_BOLD, bg=theme.WHITE).pack(side=tk.LEFT)
+        years = [str(y) for y in range(now.year, now.year - 6, -1)]
+        cmb_year = ttk.Combobox(ctrl, textvariable=year_var, values=years, width=8, state="readonly")
+        cmb_year.pack(side=tk.LEFT, padx=(4, 12))
+        tk.Label(ctrl, text="Month:", font=theme.FONT_BODY_BOLD, bg=theme.WHITE).pack(side=tk.LEFT)
+        cmb_month = ttk.Combobox(
+            ctrl, textvariable=month_var,
+            values=[f"{i}" for i in range(1, 13)], width=6, state="readonly",
+        )
+        cmb_month.pack(side=tk.LEFT, padx=(4, 12))
+
+        ATT_COLORS = {
+            "Present": theme.SUCCESS, "Absent": theme.DANGER,
+            "Leave": theme.INFO, "Late": theme.WARNING,
+        }
+
+        cards_host = tk.Frame(scroll, bg=theme.WHITE)
+        cards_host.pack(fill=tk.X, pady=(0, 8))
+
+        export_row = tk.Frame(scroll, bg=theme.WHITE)
+        export_row.pack(fill=tk.X, pady=(0, 10))
+
+        tk.Label(
+            scroll, text="📅 Monthly Breakdown (selected year)",
+            font=theme.FONT_H2, bg=theme.WHITE, fg=theme.TEXT_DARK,
+        ).pack(anchor="w", pady=(8, 4))
+        month_tree = ttk.Treeview(
+            scroll,
+            columns=("month", "present", "absent", "leave", "late", "total", "rate"),
+            show="headings", height=8,
+        )
+        for c, h, w in [
+            ("month", "Month", 110), ("present", "Present", 80), ("absent", "Absent", 80),
+            ("leave", "Leave", 70), ("late", "Late", 70), ("total", "Total Days", 90),
+            ("rate", "Attendance %", 100),
+        ]:
+            month_tree.heading(c, text=h)
+            month_tree.column(c, width=w, anchor="center")
+        month_tree.pack(fill=tk.X, pady=(0, 10))
+
+        tk.Label(
+            scroll, text="📋 Day-wise History (selected month)",
+            font=theme.FONT_H2, bg=theme.WHITE, fg=theme.TEXT_DARK,
+        ).pack(anchor="w", pady=(4, 4))
+        day_tree = ttk.Treeview(
+            scroll, columns=("date", "status", "method", "time"), show="headings", height=10,
+        )
+        for c, h, w in [
+            ("date", "Date", 110), ("status", "Status", 90),
+            ("method", "Method", 110), ("time", "In Time", 90),
+        ]:
+            day_tree.heading(c, text=h)
+            day_tree.column(c, width=w, anchor="center")
+        for st, color in ATT_COLORS.items():
+            day_tree.tag_configure(st, foreground=color)
+        day_tree.pack(fill=tk.X, pady=(0, 8))
+
+        def _stat_row(parent, title, counts):
+            box = tk.Frame(parent, bg=theme.WHITE, highlightbackground=theme.SILVER_BORDER,
+                           highlightthickness=1, padx=10, pady=8)
+            box.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 8))
+            tk.Label(box, text=title, font=theme.FONT_SMALL, bg=theme.WHITE,
+                     fg=theme.TEXT_MUTED).pack(anchor="w")
+            rate_fg = theme.SUCCESS if counts["Rate"] >= 80 else (
+                theme.WARNING if counts["Rate"] >= 60 else theme.DANGER
+            )
+            tk.Label(
+                box, text=f"{counts['Rate']:.1f}%",
+                font=("Segoe UI", 18, "bold"), bg=theme.WHITE, fg=rate_fg,
+            ).pack(anchor="w")
+            detail = (
+                f"P {counts['Present']}  ·  A {counts['Absent']}  ·  "
+                f"L {counts['Leave']}  ·  Late {counts['Late']}  ·  Total {counts['Total']}"
+            )
+            tk.Label(box, text=detail, font=theme.FONT_SMALL, bg=theme.WHITE,
+                     fg=theme.TEXT_MUTED).pack(anchor="w", pady=(2, 0))
+
+        def refresh(_ev=None):
+            for w in cards_host.winfo_children():
+                w.destroy()
+            try:
+                y = int(year_var.get())
+                m = int(month_var.get())
+            except ValueError:
+                y, m = now.year, now.month
+
+            month_counts = self._attendance_counts(s["student_id"], year=y, month=m)
+            year_counts = self._attendance_counts(s["student_id"], year=y)
+            state["month_counts"] = month_counts
+            state["year_counts"] = year_counts
+            _stat_row(cards_host, f"This Month — {MONTH_NAMES[m - 1]} {y}", month_counts)
+            _stat_row(cards_host, f"Yearly — {y}", year_counts)
+
+            month_tree.delete(*month_tree.get_children())
+            monthly_rows = []
+            for mi in range(1, 13):
+                c = self._attendance_counts(s["student_id"], year=y, month=mi)
+                if c["Total"] == 0 and mi > m and y == now.year:
+                    continue
+                row = (
+                    MONTH_NAMES[mi - 1],
+                    c["Present"], c["Absent"], c["Leave"], c["Late"],
+                    c["Total"], f"{c['Rate']:.1f}%",
+                )
+                monthly_rows.append(row)
+                month_tree.insert("", tk.END, values=row)
+            state["monthly_rows"] = monthly_rows
+
+            day_tree.delete(*day_tree.get_children())
+            rows = self._attendance_day_rows(s["student_id"], year=y, month=m, limit=200)
+            state["day_rows"] = rows
+            if not rows:
+                day_tree.insert("", tk.END, values=("No records", "—", "—", "—"))
+            else:
+                for d, st, method, in_time in rows:
+                    tag = st if st in ATT_COLORS else ""
+                    day_tree.insert(
+                        "", tk.END,
+                        values=(d, st, method or "—", (in_time or "").strip() or "—"),
+                        tags=(tag,) if tag else (),
+                    )
+
+        def do_export_excel():
+            try:
+                y = int(year_var.get())
+                m = int(month_var.get())
+            except ValueError:
+                y, m = now.year, now.month
+            try:
+                from smart_attendance import (
+                    export_personal_attendance_excel, _ask_save_path,
+                )
+            except Exception as exc:
+                messagebox.showerror("Export", f"Could not load export module:\n{exc}", parent=self.win)
+                return
+            default = f"Personal_Attendance_{s['student_id']}_{y}-{m:02d}.xlsx"
+            path = _ask_save_path(self.win, default, "xlsx")
+            if not path:
+                return
+            try:
+                export_personal_attendance_excel(
+                    s["student_id"], s["name"], s.get("class_sec") or "",
+                    y, m, state["month_counts"], state["year_counts"],
+                    state["day_rows"], state["monthly_rows"], path,
+                )
+                messagebox.showinfo("Export Complete", f"Excel saved:\n{path}", parent=self.win)
+            except Exception as exc:
+                messagebox.showerror("Export Failed", str(exc), parent=self.win)
+
+        def do_export_pdf():
+            try:
+                y = int(year_var.get())
+                m = int(month_var.get())
+            except ValueError:
+                y, m = now.year, now.month
+            try:
+                from smart_attendance import (
+                    export_personal_attendance_pdf, _ask_save_path,
+                )
+            except Exception as exc:
+                messagebox.showerror("Export", f"Could not load export module:\n{exc}", parent=self.win)
+                return
+            default = f"Personal_Attendance_{s['student_id']}_{y}-{m:02d}.pdf"
+            path = _ask_save_path(self.win, default, "pdf")
+            if not path:
+                return
+            try:
+                export_personal_attendance_pdf(
+                    s["student_id"], s["name"], s.get("class_sec") or "",
+                    y, m, state["month_counts"], state["year_counts"],
+                    state["day_rows"], path,
+                )
+                messagebox.showinfo("Export Complete", f"PDF saved:\n{path}", parent=self.win)
+            except Exception as exc:
+                messagebox.showerror("Export Failed", str(exc), parent=self.win)
+
+        theme.primary_button(ctrl, "↻ Refresh", refresh, bg=theme.SLATE).pack(side=tk.LEFT, padx=4)
+        theme.primary_button(export_row, "📁 Export Excel", do_export_excel, bg=theme.SUCCESS).pack(side=tk.LEFT, padx=(0, 8))
+        theme.primary_button(export_row, "📄 Export PDF", do_export_pdf, bg=theme.SLATE).pack(side=tk.LEFT)
+        cmb_year.bind("<<ComboboxSelected>>", refresh)
+        cmb_month.bind("<<ComboboxSelected>>", refresh)
+        refresh()
+
     def _build_results_tab(self):
         s = self.student
         f = tk.Frame(self.tab_results, bg=theme.WHITE, padx=16, pady=12)
         f.pack(fill=tk.BOTH, expand=True)
         if not s:
             return
+        tk.Label(f, text="Examination results are loaded here.", font=theme.FONT_BODY, bg=theme.WHITE).pack(anchor="w")
 
-        exam_types = results_engine.exam_types_for_student(s["student_id"])
-        ctrl = tk.Frame(f, bg=theme.WHITE)
-        ctrl.pack(fill=tk.X)
-        tk.Label(ctrl, text="Examination:", bg=theme.WHITE, font=theme.FONT_SMALL).pack(side=tk.LEFT)
-        cmb_exam = ttk.Combobox(ctrl, values=["All Exams"] + exam_types, state="readonly", width=20)
-        cmb_exam.current(0)
-        cmb_exam.pack(side=tk.LEFT, padx=6)
-
-        summary_lbl = tk.Label(f, text="", font=theme.FONT_BODY_BOLD, bg=theme.WHITE)
-        summary_lbl.pack(anchor="w", pady=(10, 6))
-
-        info_lbl = tk.Label(
-            f,
-            text=(
-                f"ID: {s['student_id']}  ·  {s['name']}  ·  "
-                f"Father: {s.get('father_name') or '—'}  ·  Class: {s.get('class_sec') or '—'}  ·  "
-                f"Session: {s.get('academic_year') or '—'}"
-            ),
-            font=theme.FONT_SMALL, bg=theme.WHITE, fg=theme.TEXT_MUTED,
-        )
-        info_lbl.pack(anchor="w", pady=(0, 6))
-
-        tree = ttk.Treeview(f, columns=("subject", "obtained", "total", "percent", "result"),
-                             show="headings", height=10)
-        for c, h in [("subject", "Subject"), ("obtained", "Obtained"), ("total", "Total"),
-                     ("percent", "Percent"), ("result", "Result")]:
-            tree.heading(c, text=h)
-            tree.column(c, anchor="center")
-        tree.pack(fill=tk.BOTH, expand=True)
-
-        state = {}
-
-        def load():
-            exam = None if cmb_exam.get() == "All Exams" else cmb_exam.get()
-            result = results_engine.compute_result(s["student_id"], exam)
-            tree.delete(*tree.get_children())
-            if not result:
-                summary_lbl.config(text="No marks recorded yet.", fg=theme.TEXT_MUTED)
-                state["last"] = None
-                return
-            for sub in result["subjects"]:
-                tree.insert("", tk.END, values=(sub["subject"], f"{sub['obtained']:.1f}", f"{sub['total']:.1f}",
-                                                 f"{sub['percent']:.1f}%", "PASS" if sub["pass"] else "FAIL"))
-            summary_lbl.config(
-                text=f"Total: {result['total_obtained']:.1f}/{result['total_marks']:.1f}  |  "
-                     f"Percentage: {result['percentage']:.2f}%  |  Grade: {result['grade']}  |  "
-                     f"{'PASS' if result['passed'] else 'FAIL'}",
-                fg=theme.SUCCESS if result["passed"] else theme.DANGER)
-            state["last"] = (result, exam)
-
-            try:
-                from results_window import class_rank_for_student
-                rank_info = class_rank_for_student(s["student_id"], s.get("class_sec") or "", exam)
-                if rank_info:
-                    rank, size, pct = rank_info
-                    summary_lbl.config(
-                        text=summary_lbl.cget("text") + f"  |  Class Rank: {rank}/{size}"
-                    )
-            except Exception:
-                pass
-
-        def export():
-            if "last" not in state or not state["last"]:
-                load()
-            if not state.get("last"):
-                messagebox.showinfo("No Data", "No marks to export.", parent=self.win)
-                return
-            result, exam = state["last"]
-            out_path = os.path.join(os.getcwd(), f"Marksheet_{s['student_id']}.pdf")
-            reports.generate_marksheet(s["student_id"], s["name"], s["class_sec"], result, out_path,
-                                        exam_label=exam or "All Exams")
-            messagebox.showinfo("Marksheet Generated", f"Saved to:\n{out_path}", parent=self.win)
-
-        def open_full_results():
-            try:
-                from results_window import launch_results_window
-                launch_results_window(self.win, self.user_role, self.current_user)
-            except Exception as e:
-                messagebox.showerror("Error", f"Could not open Results module:\n{e}", parent=self.win)
-
-        cmb_exam.bind("<<ComboboxSelected>>", lambda e: load())
-        theme.primary_button(ctrl, "🧾 Export Marksheet PDF", export, bg=theme.SLATE).pack(side=tk.LEFT, padx=10)
-        if rbac.can(self.user_role, "results.marks.edit") or rbac.can(self.user_role, "results.view"):
-            theme.primary_button(ctrl, "📊 Open Full Results Module", open_full_results, bg=theme.BRAND_BLUE).pack(
-                side=tk.LEFT, padx=4
-            )
-        load()
-
-    def _build_fees_tab(self):
-        s = self.student
-        f = tk.Frame(self.tab_fees, bg=theme.WHITE, padx=16, pady=12)
-        f.pack(fill=tk.BOTH, expand=True)
-        if not s:
-            return
-
-        # ---- Monthly Fee (from students.total_fee / paid_fee) ----
-        monthly_charged = float(s.get("total_fee") or 0)
-        monthly_paid = float(s.get("paid_fee") or 0)
-        monthly_balance = monthly_charged - monthly_paid
-        if monthly_charged <= 0:
-            monthly_status = "—"
-        elif monthly_balance <= 0:
-            monthly_status = "Paid"
-        elif monthly_paid > 0:
-            monthly_status = "Partial / Pending"
-        else:
-            monthly_status = "Pending"
-
-        # ---- One-time Admission Fee (ledger first, then extra columns) ----
-        adm = None
-        try:
-            adm = reports.get_admission_fee_status(s["student_id"])
-        except Exception:
-            adm = None
-        if not adm:
-            charged = float(s.get("admission_fee") or 0)
-            paid_adm = float(s.get("admission_fee_paid") or 0)
-            if charged > 0 or paid_adm > 0:
-                if paid_adm >= charged and charged > 0:
-                    st = "Paid"
-                elif paid_adm > 0:
-                    st = "Partial"
-                else:
-                    st = "Pending"
-                adm = {
-                    "charged": charged,
-                    "paid": paid_adm,
-                    "status": st,
-                    "pending": max(0.0, charged - paid_adm),
-                }
-
-        # Section: Admission Fee (One-Time)
-        tk.Label(f, text="Admission Fee (One-Time)", font=theme.FONT_H2, bg=theme.WHITE).pack(
-            anchor="w", pady=(0, 4)
-        )
-        if adm and (adm["charged"] > 0 or adm["paid"] > 0):
-            adm_rows = [
-                ("Charged", f"Rs. {adm['charged']:,.2f}", theme.TEXT_DARK),
-                ("Paid", f"Rs. {adm['paid']:,.2f}", theme.SUCCESS),
-                ("Pending", f"Rs. {adm['pending']:,.2f}",
-                 theme.DANGER if adm["pending"] > 0 else theme.SUCCESS),
-                ("Status", adm["status"], theme.SUCCESS if adm["status"] == "Paid" else theme.DANGER),
-            ]
-        else:
-            adm_rows = [
-                ("Charged", "Rs. 0.00", theme.TEXT_MUTED),
-                ("Paid", "Rs. 0.00", theme.TEXT_MUTED),
-                ("Status", "Not charged", theme.TEXT_MUTED),
-            ]
-        for label, val, color in adm_rows:
-            row = tk.Frame(f, bg=theme.WHITE)
-            row.pack(fill=tk.X, pady=1)
-            tk.Label(row, text=label, font=theme.FONT_BODY, bg=theme.WHITE, fg=theme.TEXT_MUTED).pack(side=tk.LEFT)
-            tk.Label(row, text=val, font=theme.FONT_BODY_BOLD, bg=theme.WHITE, fg=color).pack(side=tk.RIGHT)
-
-        # Section: Monthly Fee
-        tk.Label(f, text="Monthly Fee", font=theme.FONT_H2, bg=theme.WHITE).pack(
-            anchor="w", pady=(14, 4)
-        )
-        for label, val, color in [
-            ("Charged (Monthly)", f"Rs. {monthly_charged:,.2f}", theme.TEXT_DARK),
-            ("Paid to Date", f"Rs. {monthly_paid:,.2f}", theme.SUCCESS),
-            ("Outstanding Balance", f"Rs. {monthly_balance:,.2f}",
-             theme.DANGER if monthly_balance > 0 else theme.SUCCESS),
-            ("Status", monthly_status,
-             theme.SUCCESS if monthly_status == "Paid" else theme.DANGER),
-        ]:
-            row = tk.Frame(f, bg=theme.WHITE)
-            row.pack(fill=tk.X, pady=1)
-            tk.Label(row, text=label, font=theme.FONT_BODY, bg=theme.WHITE, fg=theme.TEXT_MUTED).pack(side=tk.LEFT)
-            tk.Label(row, text=val, font=theme.FONT_BODY_BOLD, bg=theme.WHITE, fg=color).pack(side=tk.RIGHT)
-
-        # Combined revenue summary for this student
-        try:
-            fee_rev = db.run(
-                "SELECT COALESCE(SUM(amount),0) FROM accounting_revenue "
-                "WHERE student_id=? AND source_type='Student Fee'",
-                (s["student_id"],), fetchone=True,
-            )[0]
-            adm_rev = db.run(
-                "SELECT COALESCE(SUM(amount),0) FROM accounting_revenue "
-                "WHERE student_id=? AND source_type='Admission Fee'",
-                (s["student_id"],), fetchone=True,
-            )[0]
-        except Exception:
-            fee_rev, adm_rev = 0.0, 0.0
-        tk.Label(f, text="Revenue recorded (Accounting)", font=theme.FONT_H2, bg=theme.WHITE).pack(
-            anchor="w", pady=(14, 4)
-        )
-        for label, val, color in [
-            ("Monthly Fee Revenue", f"Rs. {float(fee_rev):,.2f}", theme.TEXT_DARK),
-            ("Admission Fee Revenue", f"Rs. {float(adm_rev):,.2f}", theme.TEXT_DARK),
-            ("Total Fee Revenue", f"Rs. {float(fee_rev) + float(adm_rev):,.2f}", theme.BRAND_BLUE),
-        ]:
-            row = tk.Frame(f, bg=theme.WHITE)
-            row.pack(fill=tk.X, pady=1)
-            tk.Label(row, text=label, font=theme.FONT_BODY, bg=theme.WHITE, fg=theme.TEXT_MUTED).pack(side=tk.LEFT)
-            tk.Label(row, text=val, font=theme.FONT_BODY_BOLD, bg=theme.WHITE, fg=color).pack(side=tk.RIGHT)
-
-        tk.Label(f, text="Payment History (Monthly + Admission Fee)", font=theme.FONT_H2,
-                 bg=theme.WHITE).pack(anchor="w", pady=(14, 6))
-        tree = ttk.Treeview(
-            f,
-            columns=("date", "type", "amount", "method", "recorded_by", "description"),
-            show="headings",
-            height=10,
-        )
-        for c, w in [
-            ("date", 90), ("type", 110), ("amount", 90),
-            ("method", 80), ("recorded_by", 100), ("description", 220),
-        ]:
-            tree.heading(c, text=c.replace("_", " ").title())
-            tree.column(c, width=w, anchor="center" if c != "description" else "w")
-        tree.pack(fill=tk.BOTH, expand=True)
-        history = db.run(
-            "SELECT date, source_type, amount, payment_method, recorded_by, description "
-            "FROM accounting_revenue "
-            "WHERE student_id=? AND source_type IN ('Student Fee', 'Admission Fee') "
-            "ORDER BY id DESC",
-            (s["student_id"],),
-            fetchall=True,
-        )
-        for d, src, amt, method, by, desc in history:
-            type_label = "Admission Fee" if src == "Admission Fee" else "Monthly Fee"
-            tree.insert(
-                "", tk.END,
-                values=(d, type_label, f"Rs. {amt:,.0f}", method or "-", by or "-", desc or ""),
-            )
-
-    # ------------------------------------------------------------------
-    # Personal
-    # ------------------------------------------------------------------
     def _build_personal_tab(self):
         s = self.student
         f = tk.Frame(self.tab_personal, bg=theme.WHITE, padx=16, pady=12)
@@ -537,112 +593,10 @@ class StudentProfileWindow:
             return
         rows = [("Phone", s["phone"]), ("Address", s["address"]), ("Current Address", s.get("current_address") or "-"),
                 ("City", s.get("city") or "-"), ("Gender", s.get("gender") or "-"),
-                ("Blood Group", s.get("blood_group") or "-"), ("Mother's Name", s.get("mother_name") or "-"),
-                ("Guardian Name", s.get("guardian_name") or "-"), ("Guardian CNIC", s.get("guardian_cnic") or "-"),
-                ("Occupation", s.get("occupation") or "-"), ("Alternate Contact", s.get("alt_phone") or "-"),
-                ("Email", s.get("email") or "-"), ("Previous Education", s["prev_education"]),
-                ("Emergency Contact", s.get("emergency_contact_name") or "-"),
-                ("Emergency Phone", s.get("emergency_contact_phone") or "-"),
-                ("Emergency Relationship", s.get("emergency_relationship") or "-"),
-                ("Emergency Notes", s.get("emergency_notes") or "-")]
+                ("Mother's Name", s.get("mother_name") or "-"), ("Guardian Name", s.get("guardian_name") or "-")]
         for i, (label, val) in enumerate(rows):
-            r, c = divmod(i, 2)
-            tk.Label(f, text=f"{label}:", font=theme.FONT_SMALL, bg=theme.WHITE,
-                     fg=theme.TEXT_MUTED).grid(row=r, column=c * 2, sticky="w", padx=(0, 4), pady=4)
-            tk.Label(f, text=str(val), font=theme.FONT_BODY, bg=theme.WHITE).grid(row=r, column=c * 2 + 1,
-                                                                                    sticky="w", padx=(0, 30), pady=4)
-
-
-
-    # ------------------------------------------------------------------
-    # ID Card regenerate / reprint
-    # ------------------------------------------------------------------
-    def _id_card_args(self):
-        s = self.student
-        if not s:
-            messagebox.showinfo("No Student", "Search and load a student first.", parent=self.win)
-            return None
-        return dict(
-            student_id=s["student_id"],
-            name=s["name"],
-            cls=s["class_sec"],
-            father_name=s.get("father_name") or "",
-            phone=s.get("phone") or "",
-            photo_path=s.get("photo_path") or None,
-            emergency_phone=s.get("emergency_contact_phone") or "",
-            session=s.get("academic_year") or "",
-        )
-
-    def _generate_id_card(self):
-        args = self._id_card_args()
-        if not args:
-            return
-        out_path = os.path.join(os.getcwd(), f"ID_Card_{args['student_id']}.pdf")
-        try:
-            reports.generate_id_card(
-                args["student_id"], args["name"], args["cls"], out_path,
-                father_name=args["father_name"], phone=args["phone"],
-                photo_path=args["photo_path"], emergency_phone=args["emergency_phone"],
-                session=args["session"],
-            )
-        except Exception as e:
-            messagebox.showerror("ID Card Error", f"Could not generate ID card:\n{e}", parent=self.win)
-            return
-        # Try to open for print/preview
-        opened = False
-        try:
-            if os.name == "nt":
-                os.startfile(out_path)
-                opened = True
-            else:
-                import shutil
-                if shutil.which("xdg-open"):
-                    os.system(f'xdg-open "{out_path}"')
-                    opened = True
-                elif shutil.which("open"):
-                    os.system(f'open "{out_path}"')
-                    opened = True
-        except Exception:
-            opened = False
-        try:
-            import app as _app
-            _app.log_activity(self.current_user, f"Regenerated ID card for {args['student_id']}")
-        except Exception:
-            pass
-        messagebox.showinfo(
-            "ID Card Ready",
-            (f"ID Card opened:\n{out_path}" if opened else f"ID Card saved:\n{out_path}"),
-            parent=self.win,
-        )
-
-    def _save_id_card_as(self):
-        args = self._id_card_args()
-        if not args:
-            return
-        path = filedialog.asksaveasfilename(
-            defaultextension=".pdf",
-            initialfile=f"ID_Card_{args['student_id']}.pdf",
-            filetypes=[("PDF Files", "*.pdf")],
-            parent=self.win,
-        )
-        if not path:
-            return
-        try:
-            reports.generate_id_card(
-                args["student_id"], args["name"], args["cls"], path,
-                father_name=args["father_name"], phone=args["phone"],
-                photo_path=args["photo_path"], emergency_phone=args["emergency_phone"],
-                session=args["session"],
-            )
-        except Exception as e:
-            messagebox.showerror("ID Card Error", f"Could not generate ID card:\n{e}", parent=self.win)
-            return
-        try:
-            import app as _app
-            _app.log_activity(self.current_user, f"Saved ID card for {args['student_id']} to {path}")
-        except Exception:
-            pass
-        messagebox.showinfo("Saved", f"ID Card saved:\n{path}", parent=self.win)
+            tk.Label(f, text=f"{label}:", font=theme.FONT_SMALL, bg=theme.WHITE, fg=theme.TEXT_MUTED).grid(row=i, column=0, sticky="w", pady=3)
+            tk.Label(f, text=str(val), font=theme.FONT_BODY, bg=theme.WHITE).grid(row=i, column=1, sticky="w", padx=12, pady=3)
 
 
 def launch_student_profile_window(parent, user_role, current_user):

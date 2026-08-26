@@ -611,6 +611,73 @@ def init_db():
     )
     """)
 
+
+    # ---------------- Additional Fees (Annual / Exam / Lab / etc.) ----------
+    # Separate from monthly fee_cycles. Catalog of fee types + per-student
+    # charges + payment history. Idempotent seeds for common types.
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS additional_fee_types (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT UNIQUE NOT NULL,
+        description TEXT,
+        default_amount REAL NOT NULL DEFAULT 0,
+        is_active INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT
+    )
+    """)
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS additional_fee_charges (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        student_id TEXT NOT NULL,
+        fee_type_id INTEGER NOT NULL,
+        academic_year TEXT,
+        amount REAL NOT NULL DEFAULT 0,
+        discount REAL NOT NULL DEFAULT 0,
+        amount_paid REAL NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'PENDING',
+        due_date TEXT,
+        remarks TEXT,
+        created_at TEXT,
+        updated_at TEXT,
+        created_by TEXT,
+        FOREIGN KEY(fee_type_id) REFERENCES additional_fee_types(id)
+    )
+    """)
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS additional_fee_payments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        charge_id INTEGER NOT NULL,
+        student_id TEXT NOT NULL,
+        amount REAL NOT NULL,
+        payment_method TEXT,
+        receipt_no TEXT UNIQUE,
+        paid_date TEXT,
+        recorded_by TEXT,
+        remarks TEXT,
+        created_at TEXT,
+        FOREIGN KEY(charge_id) REFERENCES additional_fee_charges(id)
+    )
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_afc_student ON additional_fee_charges(student_id)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_afc_status ON additional_fee_charges(status)")
+    cur.execute("SELECT COUNT(*) FROM additional_fee_types")
+    if cur.fetchone()[0] == 0:
+        _seed_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        for _name, _desc in (
+            ("Annual Fee", "Yearly school charges"),
+            ("Exam Fee", "Examination / board fee"),
+            ("Lab Fee", "Science / computer lab"),
+            ("Sports Fee", "Sports and games"),
+            ("Transport Fee", "School transport (term)"),
+            ("Other", "Miscellaneous one-time fee"),
+        ):
+            cur.execute(
+                "INSERT INTO additional_fee_types "
+                "(name, description, default_amount, is_active, created_at) "
+                "VALUES (?, ?, 0, 1, ?)",
+                (_name, _desc, _seed_ts),
+            )
+
     # ---------------- Non-destructive column upgrades on old DBs -----------
     _add_column_if_missing(cur, "students", "photo_path", "TEXT")
     _add_column_if_missing(cur, "attendance", "method", "TEXT DEFAULT 'Manual'")
@@ -649,7 +716,6 @@ def init_db():
     cur.execute("CREATE INDEX IF NOT EXISTS idx_fee_payments_student ON fee_payments(student_id)")
 
     # ---------------- Seed default accounts & config ------------------------
-    from security import hash_password
     _seed_user(cur, "admin", "admin123", "Admin")
     _seed_user(cur, "teacher", "teacher123", "Teacher")
     _seed_user(cur, "reception", "reception123", "Reception")

@@ -14,6 +14,7 @@ import rbac
 import reports
 import theme
 import fee_cycles
+import additional_fees
 import whatsapp_notify
 
 PAYMENT_METHODS = ["Cash", "Bank", "Online Transfer", "Other"]
@@ -50,8 +51,8 @@ class FeeManagementWindow:
 
         self.win = tk.Toplevel(parent)
         self.win.title("Fee Management")
-        self.win.geometry("880x780")
-        self.win.minsize(820, 700)
+        self.win.geometry("880x700")
+        self.win.minsize(780, 560)
         self.win.config(bg=theme.SILVER)
         self.win.transient(parent)
 
@@ -78,8 +79,46 @@ class FeeManagementWindow:
         tk.Label(header, text="Search a student to view their fee status and collect payment.",
                  font=theme.FONT_SMALL, bg=theme.NAVY, fg="#94a3b8").pack(anchor="w")
 
-        body = tk.Frame(self.win, bg=theme.SILVER, padx=16, pady=14)
-        body.pack(fill=tk.BOTH, expand=True)
+        # ---- Scrollable container ----
+        outer = tk.Frame(self.win, bg=theme.SILVER)
+        outer.pack(fill=tk.BOTH, expand=True)
+
+        self._canvas = tk.Canvas(outer, bg=theme.SILVER, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(outer, orient="vertical", command=self._canvas.yview)
+        self._canvas.configure(yscrollcommand=scrollbar.set)
+
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self._canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        body = tk.Frame(self._canvas, bg=theme.SILVER, padx=16, pady=14)
+        self._canvas_window = self._canvas.create_window((0, 0), window=body, anchor="nw")
+
+        def _on_frame_configure(event=None):
+            self._canvas.configure(scrollregion=self._canvas.bbox("all"))
+
+        def _on_canvas_configure(event):
+            self._canvas.itemconfig(self._canvas_window, width=event.width)
+
+        body.bind("<Configure>", _on_frame_configure)
+        self._canvas.bind("<Configure>", _on_canvas_configure)
+
+        # Mouse-wheel scrolling (Windows / macOS / Linux)
+        def _on_mousewheel(event):
+            if event.num == 4 or event.delta > 0:
+                self._canvas.yview_scroll(-1, "units")
+            elif event.num == 5 or event.delta < 0:
+                self._canvas.yview_scroll(1, "units")
+
+        self._canvas.bind_all("<MouseWheel>", _on_mousewheel)
+        self._canvas.bind_all("<Button-4>", _on_mousewheel)
+        self._canvas.bind_all("<Button-5>", _on_mousewheel)
+
+        def _unbind_wheel(event=None):
+            self._canvas.unbind_all("<MouseWheel>")
+            self._canvas.unbind_all("<Button-4>")
+            self._canvas.unbind_all("<Button-5>")
+
+        self.win.bind("<Destroy>", _unbind_wheel)
 
         # ---- Search ----
         search_card, search_body = theme.section_card(body, "Student Search")
@@ -129,7 +168,7 @@ class FeeManagementWindow:
                    "due": "Amount Due", "paid": "Paid", "balance": "Balance", "status": "Status"}
         widths = {"period": 90, "fee": 70, "discount": 70, "prev_bal": 70, "due": 80,
                   "paid": 70, "balance": 80, "status": 80}
-        self.tree_cycles = ttk.Treeview(hist_body, columns=columns, show="headings", height=8)
+        self.tree_cycles = ttk.Treeview(hist_body, columns=columns, show="headings", height=5)
         for c in columns:
             self.tree_cycles.heading(c, text=headers[c])
             self.tree_cycles.column(c, width=widths[c], anchor="center")
@@ -140,25 +179,46 @@ class FeeManagementWindow:
         tk.Label(hist_body, text="Click a month to review or act on that cycle instead of the latest one.",
                  font=theme.FONT_SMALL, bg=theme.WHITE, fg=theme.TEXT_MUTED).pack(anchor="w", pady=(4, 0))
 
+
+        # ---- Additional Fees (Annual / Exam / Lab / etc.) ----
+        self.add_fee_card, add_fee_body = theme.section_card(body, "Additional Fees (Annual / Exam / Lab / Other)")
+        self.add_fee_card.pack(fill=tk.X, pady=(0, 10))
+        self.add_fee_body = add_fee_body
+        self.tree_add_fees = None
+        self.selected_add_charge = None
+        self._render_additional_fees_empty()
+
         # ---- Admin Tools ----
         if self.can_edit or self.can_admin or self.can_reports:
             admin_card, admin_body = theme.section_card(body, "Admin Tools")
             admin_card.pack(fill=tk.X)
             admin_row = tk.Frame(admin_body, bg=theme.WHITE)
             admin_row.pack(fill=tk.X)
-            if self.can_edit:
-                self.btn_generate = theme.primary_button(admin_row, "➕ Generate New Cycle",
-                                                           self._open_generate_dialog, bg=theme.SLATE)
-                self.btn_generate.pack(side=tk.LEFT, padx=(0, 6))
-                self.btn_generate.config(state="disabled")
+
+            # Single secure action — current month only
+            if self.can_admin or self.can_edit:
+                theme.primary_button(
+                    admin_row,
+                    "⚡ Generate Current Month Fee Cycle",
+                    self._generate_current_month_cycles,
+                    bg=theme.SLATE,
+                ).pack(side=tk.LEFT, padx=(0, 6))
+
             if self.can_admin:
-                theme.primary_button(admin_row, "📆 Bulk Generate Cycle", self._open_bulk_generate_dialog,
-                                      bg=theme.SLATE).pack(side=tk.LEFT, padx=(0, 6))
-                theme.primary_button(admin_row, "🔄 Refresh Overdue Statuses", self._refresh_overdue,
-                                      bg=theme.SLATE).pack(side=tk.LEFT, padx=(0, 6))
+                theme.primary_button(
+                    admin_row, "🔄 Refresh Overdue Statuses", self._refresh_overdue,
+                    bg=theme.SLATE,
+                ).pack(side=tk.LEFT, padx=(0, 6))
+                theme.primary_button(
+                    admin_row, "🏫 Bulk Additional Fees",
+                    self._bulk_assign_additional_fees, bg=theme.SLATE,
+                ).pack(side=tk.LEFT, padx=(0, 6))
+
             if self.can_reports:
-                theme.primary_button(admin_row, "📊 Reports", self._open_reports_dialog,
-                                      bg=theme.SLATE).pack(side=tk.LEFT)
+                theme.primary_button(
+                    admin_row, "📊 Reports", self._open_reports_dialog,
+                    bg=theme.SLATE,
+                ).pack(side=tk.LEFT)
         else:
             self.btn_generate = None
 
@@ -202,11 +262,10 @@ class FeeManagementWindow:
         if (status or "Active") != "Active":
             self.lbl_search_status.config(text=f"⚠ Student '{name}' is Archived — read-only.")
 
-        if self.btn_generate is not None:
-            self.btn_generate.config(state="normal" if ((status or "Active") == "Active") else "disabled")
 
         self.receipt_card.pack_forget()
         self._load_history()
+        self._load_additional_fees()
 
     def _clear_info(self):
         for lbl in self.info_labels.values():
@@ -490,98 +549,42 @@ class FeeManagementWindow:
     # ------------------------------------------------------------------
     # Admin Tools
     # ------------------------------------------------------------------
-    def _open_generate_dialog(self):
-        if not self.student:
-            messagebox.showinfo("Select a Student", "Search for a student first.", parent=self.win)
+    def _generate_current_month_cycles(self):
+        """Generate fee cycles for every Active student for the real system
+        current month/year only. Existing cycles are skipped safely.
+        Manual back-fill / future cycles are blocked by the backend.
+        """
+        now = datetime.now()
+        month, year = now.month, now.year
+        if not messagebox.askyesno(
+            "Generate Current Month Cycles",
+            f"Create fee cycles for {MONTH_NAMES[month-1]} {year} "
+            f"for every Active student?\n\n"
+            "Students who already have a cycle for this month will be skipped.",
+            parent=self.win,
+        ):
             return
-        dlg = tk.Toplevel(self.win)
-        dlg.title("Generate New Fee Cycle")
-        dlg.geometry("360x360")
-        dlg.config(bg=theme.WHITE)
-        dlg.transient(self.win)
-        dlg.grab_set()
-
-        def field(label, default=""):
-            tk.Label(dlg, text=label, font=theme.FONT_SMALL, bg=theme.WHITE,
-                      fg=theme.TEXT_MUTED).pack(anchor="w", padx=16, pady=(10, 2))
-            e = tk.Entry(dlg, font=theme.FONT_BODY)
-            e.insert(0, default)
-            e.pack(fill=tk.X, padx=16)
-            return e
-
-        now = datetime.now()
-        ent_month = field("Billing Month (1-12)", str(now.month))
-        ent_year = field("Billing Year", str(now.year))
-        ent_fee = field("Fee Amount (Rs., blank = student's default fee)")
-        ent_due = field("Due Date (YYYY-MM-DD, optional)")
-        ent_grace = field("Grace Period (days)", "0")
-
-        def submit():
-            try:
-                month = int(ent_month.get().strip())
-                year = int(ent_year.get().strip())
-                grace = int(ent_grace.get().strip() or 0)
-                fee_amt = float(ent_fee.get().strip()) if ent_fee.get().strip() else None
-                due = ent_due.get().strip()
-                if due:
-                    datetime.strptime(due, "%Y-%m-%d")
-            except ValueError:
-                messagebox.showerror("Invalid Input", "Check month/year/fee/due-date format.", parent=dlg)
-                return
-            try:
-                fee_cycles.generate_cycle(self.user_role, self.student["student_id"], month, year,
-                                           fee_amount=fee_amt, due_date=due, grace_period_days=grace,
-                                           actor=self.current_user)
-            except (ValueError, rbac.PermissionDenied) as e:
-                messagebox.showerror("Could Not Generate Cycle", str(e), parent=dlg)
-                return
-            dlg.destroy()
-            self._load_history()
-            self._notify_change()
-            messagebox.showinfo("Cycle Generated", f"Fee cycle for {month:02d}/{year} created.", parent=self.win)
-
-        theme.primary_button(dlg, "Create Cycle", submit, bg=theme.SUCCESS).pack(fill=tk.X, padx=16, pady=16, ipady=6)
-
-    def _open_bulk_generate_dialog(self):
-        dlg = tk.Toplevel(self.win)
-        dlg.title("Bulk Generate Fee Cycle")
-        dlg.geometry("320x220")
-        dlg.config(bg=theme.WHITE)
-        dlg.transient(self.win)
-        dlg.grab_set()
-
-        now = datetime.now()
-        tk.Label(dlg, text="Billing Month (1-12)", font=theme.FONT_SMALL, bg=theme.WHITE).pack(anchor="w", padx=16, pady=(14, 2))
-        ent_month = tk.Entry(dlg, font=theme.FONT_BODY); ent_month.insert(0, str(now.month)); ent_month.pack(fill=tk.X, padx=16)
-        tk.Label(dlg, text="Billing Year", font=theme.FONT_SMALL, bg=theme.WHITE).pack(anchor="w", padx=16, pady=(10, 2))
-        ent_year = tk.Entry(dlg, font=theme.FONT_BODY); ent_year.insert(0, str(now.year)); ent_year.pack(fill=tk.X, padx=16)
-
-        def submit():
-            try:
-                month = int(ent_month.get().strip())
-                year = int(ent_year.get().strip())
-            except ValueError:
-                messagebox.showerror("Invalid Input", "Month/Year must be numbers.", parent=dlg)
-                return
-            try:
-                result = fee_cycles.bulk_generate_cycle(self.user_role, month, year, actor=self.current_user)
-            except rbac.PermissionDenied as e:
-                messagebox.showerror("Permission Denied", str(e), parent=dlg)
-                return
-            dlg.destroy()
-            messagebox.showinfo(
-                "Bulk Generate Complete",
-                f"Created: {len(result['created'])}\n"
-                f"Already existed (skipped): {len(result['skipped'])}\n"
-                f"Errors: {len(result['errors'])}",
-                parent=self.win,
+        try:
+            result = fee_cycles.bulk_generate_cycle(
+                self.user_role, month, year, actor=self.current_user,
             )
-            if self.student:
-                self._load_history()
-            self._notify_change()
-
-        theme.primary_button(dlg, "Generate for All Active Students", submit, bg=theme.SUCCESS).pack(
-            fill=tk.X, padx=16, pady=16, ipady=6)
+        except rbac.PermissionDenied as e:
+            messagebox.showerror("Permission Denied", str(e), parent=self.win)
+            return
+        except ValueError as e:
+            messagebox.showerror("Could Not Generate", str(e), parent=self.win)
+            return
+        messagebox.showinfo(
+            "Bulk Generate Complete",
+            f"Month: {MONTH_NAMES[month-1]} {year}\n\n"
+            f"Created: {len(result['created'])}\n"
+            f"Already existed (skipped): {len(result['skipped'])}\n"
+            f"Errors: {len(result['errors'])}",
+            parent=self.win,
+        )
+        if self.student:
+            self._load_history()
+        self._notify_change()
 
     def _refresh_overdue(self):
         try:
@@ -647,6 +650,555 @@ class FeeManagementWindow:
 
         theme.primary_button(top, "Refresh", refresh).pack(side=tk.LEFT)
         refresh()
+
+
+
+    # ------------------------------------------------------------------
+    # Additional Fees (Annual / Exam / Lab / Other)
+    # ------------------------------------------------------------------
+    def _render_additional_fees_empty(self):
+        for w in self.add_fee_body.winfo_children():
+            w.destroy()
+        tk.Label(
+            self.add_fee_body,
+            text="Search a student to view / collect their additional fees.\n"
+                 "Class-wise or school-wide assignment is available via Bulk Assign.",
+            font=theme.FONT_BODY, bg=theme.WHITE, fg=theme.TEXT_MUTED,
+            justify="left",
+        ).pack(anchor="w")
+        self.tree_add_fees = None
+        self.selected_add_charge = None
+        btn_row = tk.Frame(self.add_fee_body, bg=theme.WHITE)
+        btn_row.pack(fill=tk.X, pady=(10, 0))
+        if self.can_admin or self.can_edit:
+            theme.primary_button(
+                btn_row, "🏫 Bulk Assign (Class / All)",
+                self._bulk_assign_additional_fees, bg=theme.SLATE,
+            ).pack(side=tk.LEFT)
+
+    def _load_additional_fees(self):
+        for w in self.add_fee_body.winfo_children():
+            w.destroy()
+        self.selected_add_charge = None
+        if not self.student:
+            self._render_additional_fees_empty()
+            return
+        try:
+            additional_fees.ensure_tables()
+            charges = additional_fees.get_student_charges(
+                self.user_role, self.student["student_id"]
+            )
+        except Exception as exc:
+            tk.Label(
+                self.add_fee_body, text=f"Could not load additional fees: {exc}",
+                font=theme.FONT_SMALL, bg=theme.WHITE, fg=theme.DANGER,
+            ).pack(anchor="w")
+            return
+
+        cols = ("type", "year", "amount", "discount", "paid", "balance", "status")
+        self.tree_add_fees = ttk.Treeview(
+            self.add_fee_body, columns=cols, show="headings", height=4,
+        )
+        headers = {
+            "type": "Fee Type", "year": "Year", "amount": "Amount",
+            "discount": "Discount", "paid": "Paid", "balance": "Balance",
+            "status": "Status",
+        }
+        widths = {
+            "type": 120, "year": 80, "amount": 80, "discount": 70,
+            "paid": 70, "balance": 80, "status": 80,
+        }
+        for c in cols:
+            self.tree_add_fees.heading(c, text=headers[c])
+            self.tree_add_fees.column(c, width=widths[c], anchor="center")
+        self.tree_add_fees.pack(fill=tk.X, pady=(0, 6))
+        for st, color in STATUS_COLORS.items():
+            self.tree_add_fees.tag_configure(st, foreground=color)
+
+        self._add_charges_by_id = {}
+        for ch in charges:
+            self._add_charges_by_id[ch["id"]] = ch
+            bal = ch["balance"]
+            self.tree_add_fees.insert(
+                "", tk.END, iid=str(ch["id"]), tags=(ch["status"],),
+                values=(
+                    ch["type_name"],
+                    ch["academic_year"] or "—",
+                    f"{ch['amount']:,.0f}",
+                    f"{ch['discount']:,.0f}",
+                    f"{ch['amount_paid']:,.0f}",
+                    f"{bal:,.0f}",
+                    ch["status"],
+                ),
+            )
+        if not charges:
+            self.tree_add_fees.insert(
+                "", tk.END, values=("No additional fees yet", "—", "—", "—", "—", "—", "—"),
+            )
+
+        self.tree_add_fees.bind("<<TreeviewSelect>>", self._on_add_fee_select)
+
+        btn_row = tk.Frame(self.add_fee_body, bg=theme.WHITE)
+        btn_row.pack(fill=tk.X, pady=(4, 0))
+        if self.can_edit and (self.student or {}).get("status", "Active") == "Active":
+            theme.primary_button(
+                btn_row, "➕ Assign to This Student", self._assign_additional_fee, bg=theme.BRAND_BLUE,
+            ).pack(side=tk.LEFT, padx=(0, 6))
+            theme.primary_button(
+                btn_row, "💵 Collect Payment", self._collect_additional_payment, bg=theme.SUCCESS,
+            ).pack(side=tk.LEFT, padx=(0, 6))
+        if self.can_admin or self.can_edit:
+            theme.primary_button(
+                btn_row, "🏫 Bulk Assign (Class / All)",
+                self._bulk_assign_additional_fees, bg=theme.SLATE,
+            ).pack(side=tk.LEFT, padx=(0, 6))
+
+    def _on_add_fee_select(self, _event=None):
+        if not self.tree_add_fees:
+            return
+        sel = self.tree_add_fees.selection()
+        if not sel:
+            self.selected_add_charge = None
+            return
+        try:
+            cid = int(sel[0])
+        except (TypeError, ValueError):
+            self.selected_add_charge = None
+            return
+        self.selected_add_charge = getattr(self, "_add_charges_by_id", {}).get(cid)
+
+    def _assign_additional_fee(self):
+        if not self.student or not self.can_edit:
+            return
+        try:
+            types = additional_fees.list_fee_types(active_only=True)
+        except Exception as exc:
+            messagebox.showerror("Error", str(exc), parent=self.win)
+            return
+        if not types:
+            messagebox.showinfo(
+                "No Fee Types",
+                "No additional fee types configured yet.\n"
+                "Admin can add types (Annual Fee, Exam Fee, …) from this dialog.",
+                parent=self.win,
+            )
+
+        dlg = tk.Toplevel(self.win)
+        dlg.title("Assign Additional Fee")
+        dlg.geometry("420x320")
+        dlg.config(bg=theme.WHITE)
+        dlg.transient(self.win)
+        dlg.grab_set()
+
+        tk.Label(
+            dlg, text=f"Student: {self.student['name']} ({self.student['student_id']})",
+            font=theme.FONT_BODY_BOLD, bg=theme.WHITE,
+        ).pack(anchor="w", padx=14, pady=(12, 8))
+
+        form = tk.Frame(dlg, bg=theme.WHITE)
+        form.pack(fill=tk.X, padx=14)
+
+        tk.Label(form, text="Fee Type:", bg=theme.WHITE, font=theme.FONT_SMALL).grid(
+            row=0, column=0, sticky="w", pady=4
+        )
+        type_names = [t["name"] for t in types] or ["(none)"]
+        type_map = {t["name"]: t for t in types}
+        cmb_type = ttk.Combobox(form, values=type_names, state="readonly", width=22)
+        if type_names:
+            cmb_type.current(0)
+        cmb_type.grid(row=0, column=1, sticky="w", pady=4)
+
+        tk.Label(form, text="Amount (Rs.):", bg=theme.WHITE, font=theme.FONT_SMALL).grid(
+            row=1, column=0, sticky="w", pady=4
+        )
+        ent_amt = tk.Entry(form, font=theme.FONT_BODY, width=14)
+        ent_amt.grid(row=1, column=1, sticky="w", pady=4)
+
+        def on_type(_e=None):
+            t = type_map.get(cmb_type.get())
+            if t and float(t.get("default_amount") or 0) > 0:
+                ent_amt.delete(0, tk.END)
+                ent_amt.insert(0, str(t["default_amount"]))
+
+        cmb_type.bind("<<ComboboxSelected>>", on_type)
+        on_type()
+
+        tk.Label(form, text="Academic Year:", bg=theme.WHITE, font=theme.FONT_SMALL).grid(
+            row=2, column=0, sticky="w", pady=4
+        )
+        ent_year = tk.Entry(form, font=theme.FONT_BODY, width=14)
+        try:
+            import academic_year
+            ent_year.insert(0, academic_year.get_current_year_label())
+        except Exception:
+            ent_year.insert(0, str(datetime.now().year))
+        ent_year.grid(row=2, column=1, sticky="w", pady=4)
+
+        tk.Label(form, text="Remarks:", bg=theme.WHITE, font=theme.FONT_SMALL).grid(
+            row=3, column=0, sticky="w", pady=4
+        )
+        ent_remarks = tk.Entry(form, font=theme.FONT_BODY, width=28)
+        ent_remarks.grid(row=3, column=1, sticky="w", pady=4)
+
+        def do_assign():
+            t = type_map.get(cmb_type.get())
+            if not t:
+                messagebox.showerror("Error", "Select a fee type.", parent=dlg)
+                return
+            try:
+                amount = float(ent_amt.get().strip())
+            except ValueError:
+                messagebox.showerror("Invalid Amount", "Enter a valid number.", parent=dlg)
+                return
+            if amount <= 0:
+                messagebox.showerror("Invalid Amount", "Amount must be greater than zero.", parent=dlg)
+                return
+            try:
+                additional_fees.assign_charge(
+                    self.user_role,
+                    self.student["student_id"],
+                    t["id"],
+                    amount,
+                    academic_year=ent_year.get().strip(),
+                    remarks=ent_remarks.get().strip(),
+                    actor=self.current_user,
+                )
+            except Exception as exc:
+                messagebox.showerror("Could Not Assign", str(exc), parent=dlg)
+                return
+            messagebox.showinfo("Assigned", f"{t['name']} of Rs. {amount:,.0f} assigned.", parent=dlg)
+            dlg.destroy()
+            self._load_additional_fees()
+            self._notify_change()
+
+        theme.primary_button(dlg, "💾 Assign", do_assign, bg=theme.SUCCESS).pack(pady=14)
+
+    def _collect_additional_payment(self):
+        if not self.can_edit or not self.student:
+            return
+        ch = self.selected_add_charge
+        if not ch:
+            messagebox.showinfo(
+                "Select Fee",
+                "Select an additional fee row first, then click Collect Payment.",
+                parent=self.win,
+            )
+            return
+        balance = ch["balance"]
+        if balance <= 0:
+            messagebox.showinfo("Fully Paid", "This additional fee is already settled.", parent=self.win)
+            return
+
+        dlg = tk.Toplevel(self.win)
+        dlg.title(f"Collect — {ch['type_name']}")
+        dlg.geometry("400x240")
+        dlg.config(bg=theme.WHITE)
+        dlg.transient(self.win)
+        dlg.grab_set()
+
+        tk.Label(
+            dlg,
+            text=f"{ch['type_name']}  ·  Balance: Rs. {balance:,.2f}",
+            font=theme.FONT_BODY_BOLD, bg=theme.WHITE,
+        ).pack(anchor="w", padx=14, pady=(12, 8))
+
+        form = tk.Frame(dlg, bg=theme.WHITE)
+        form.pack(fill=tk.X, padx=14)
+        tk.Label(form, text="Amount (Rs.):", bg=theme.WHITE, font=theme.FONT_SMALL).grid(
+            row=0, column=0, sticky="w", pady=4
+        )
+        ent_amt = tk.Entry(form, font=theme.FONT_BODY, width=14)
+        ent_amt.insert(0, f"{balance:.2f}")
+        ent_amt.grid(row=0, column=1, sticky="w", pady=4)
+
+        tk.Label(form, text="Method:", bg=theme.WHITE, font=theme.FONT_SMALL).grid(
+            row=1, column=0, sticky="w", pady=4
+        )
+        cmb_method = ttk.Combobox(form, values=PAYMENT_METHODS, state="readonly", width=14)
+        cmb_method.current(0)
+        cmb_method.grid(row=1, column=1, sticky="w", pady=4)
+
+        tk.Label(form, text="Remarks:", bg=theme.WHITE, font=theme.FONT_SMALL).grid(
+            row=2, column=0, sticky="w", pady=4
+        )
+        ent_remarks = tk.Entry(form, font=theme.FONT_BODY, width=24)
+        ent_remarks.grid(row=2, column=1, sticky="w", pady=4)
+
+        def do_pay():
+            try:
+                amount = float(ent_amt.get().strip())
+            except ValueError:
+                messagebox.showerror("Invalid Amount", "Enter a valid number.", parent=dlg)
+                return
+            if amount <= 0:
+                messagebox.showerror("Invalid Amount", "Amount must be > 0.", parent=dlg)
+                return
+            try:
+                result = additional_fees.record_payment(
+                    self.user_role,
+                    ch["id"],
+                    amount,
+                    cmb_method.get() or "Cash",
+                    self.current_user,
+                    remarks=ent_remarks.get().strip(),
+                )
+            except Exception as exc:
+                messagebox.showerror("Could Not Record", str(exc), parent=dlg)
+                return
+            messagebox.showinfo(
+                "Payment Recorded",
+                f"Rs. {amount:,.2f} collected.\nReceipt: {result['receipt_no']}",
+                parent=dlg,
+            )
+            dlg.destroy()
+            self._load_additional_fees()
+            self._notify_change()
+
+        theme.primary_button(dlg, "✅ Record Payment", do_pay, bg=theme.SUCCESS).pack(pady=14)
+
+    # ------------------------------------------------------------------
+    # Bulk Assign Additional Fees (Class-wise / All Students)
+    # ------------------------------------------------------------------
+    def _bulk_assign_additional_fees(self):
+        """Dialog: assign Annual / Exam / Lab etc. to a class, multiple
+        classes, or every Active student. Completely separate from
+        monthly fee_cycles."""
+        if not (self.can_admin or self.can_edit):
+            messagebox.showerror(
+                "Permission Denied",
+                "You do not have permission to bulk-assign additional fees.",
+                parent=self.win,
+            )
+            return
+        try:
+            additional_fees.ensure_tables()
+            types = additional_fees.list_fee_types(active_only=True)
+            classes = additional_fees.list_active_classes()
+        except Exception as exc:
+            messagebox.showerror("Error", str(exc), parent=self.win)
+            return
+        if not types:
+            messagebox.showinfo(
+                "No Fee Types",
+                "No additional fee types configured yet.\n"
+                "Default types (Annual, Exam, Lab…) are created on first use.",
+                parent=self.win,
+            )
+            return
+
+        dlg = tk.Toplevel(self.win)
+        dlg.title("Bulk Assign Additional Fees")
+        dlg.geometry("520x520")
+        dlg.minsize(480, 460)
+        dlg.config(bg=theme.WHITE)
+        dlg.transient(self.win)
+        dlg.grab_set()
+
+        tk.Label(
+            dlg,
+            text="Assign one additional fee to many students at once.\n"
+                 "This does NOT touch monthly fee cycles.",
+            font=theme.FONT_SMALL, bg=theme.WHITE, fg=theme.TEXT_MUTED,
+            justify="left",
+        ).pack(anchor="w", padx=14, pady=(12, 6))
+
+        form = tk.Frame(dlg, bg=theme.WHITE)
+        form.pack(fill=tk.X, padx=14)
+
+        tk.Label(form, text="Fee Type:", bg=theme.WHITE, font=theme.FONT_SMALL).grid(
+            row=0, column=0, sticky="w", pady=4
+        )
+        type_names = [t["name"] for t in types]
+        type_map = {t["name"]: t for t in types}
+        cmb_type = ttk.Combobox(form, values=type_names, state="readonly", width=24)
+        cmb_type.current(0)
+        cmb_type.grid(row=0, column=1, sticky="w", pady=4)
+
+        tk.Label(form, text="Amount (Rs.):", bg=theme.WHITE, font=theme.FONT_SMALL).grid(
+            row=1, column=0, sticky="w", pady=4
+        )
+        ent_amt = tk.Entry(form, font=theme.FONT_BODY, width=16)
+        ent_amt.grid(row=1, column=1, sticky="w", pady=4)
+
+        def on_type(_e=None):
+            t = type_map.get(cmb_type.get())
+            if t and float(t.get("default_amount") or 0) > 0:
+                ent_amt.delete(0, tk.END)
+                ent_amt.insert(0, str(t["default_amount"]))
+
+        cmb_type.bind("<<ComboboxSelected>>", on_type)
+        on_type()
+
+        tk.Label(form, text="Academic Year:", bg=theme.WHITE, font=theme.FONT_SMALL).grid(
+            row=2, column=0, sticky="w", pady=4
+        )
+        ent_year = tk.Entry(form, font=theme.FONT_BODY, width=16)
+        try:
+            import academic_year
+            ent_year.insert(0, academic_year.get_current_year_label())
+        except Exception:
+            ent_year.insert(0, str(datetime.now().year))
+        ent_year.grid(row=2, column=1, sticky="w", pady=4)
+
+        tk.Label(form, text="Remarks:", bg=theme.WHITE, font=theme.FONT_SMALL).grid(
+            row=3, column=0, sticky="w", pady=4
+        )
+        ent_remarks = tk.Entry(form, font=theme.FONT_BODY, width=28)
+        ent_remarks.grid(row=3, column=1, sticky="w", pady=4)
+
+        scope_frame = tk.LabelFrame(
+            dlg, text="Assign To", font=theme.FONT_BODY_BOLD,
+            bg=theme.WHITE, fg=theme.TEXT_DARK, padx=10, pady=8,
+        )
+        scope_frame.pack(fill=tk.BOTH, expand=True, padx=14, pady=(10, 6))
+
+        scope_var = tk.StringVar(value="classes")
+
+        tk.Radiobutton(
+            scope_frame, text="All Active Students (whole school)",
+            variable=scope_var, value="all", bg=theme.WHITE, font=theme.FONT_BODY,
+            anchor="w",
+        ).pack(fill=tk.X, pady=(0, 4))
+
+        tk.Radiobutton(
+            scope_frame, text="Selected Class(es) only",
+            variable=scope_var, value="classes", bg=theme.WHITE, font=theme.FONT_BODY,
+            anchor="w",
+        ).pack(fill=tk.X, pady=(0, 4))
+
+        list_frame = tk.Frame(scope_frame, bg=theme.WHITE)
+        list_frame.pack(fill=tk.BOTH, expand=True, pady=(2, 4))
+        tk.Label(
+            list_frame,
+            text="Hold Ctrl / Shift to select multiple classes:",
+            font=theme.FONT_SMALL, bg=theme.WHITE, fg=theme.TEXT_MUTED,
+        ).pack(anchor="w")
+        lb_classes = tk.Listbox(
+            list_frame, selectmode=tk.EXTENDED, height=7,
+            font=theme.FONT_BODY, exportselection=False,
+        )
+        lb_scroll = ttk.Scrollbar(list_frame, orient="vertical", command=lb_classes.yview)
+        lb_classes.configure(yscrollcommand=lb_scroll.set)
+        lb_classes.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        lb_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        for c in classes:
+            lb_classes.insert(tk.END, c)
+        if not classes:
+            lb_classes.insert(tk.END, "(no classes found)")
+            lb_classes.config(state="disabled")
+
+        lbl_preview = tk.Label(
+            scope_frame, text="", font=theme.FONT_SMALL,
+            bg=theme.WHITE, fg=theme.INFO, anchor="w",
+        )
+        lbl_preview.pack(fill=tk.X, pady=(4, 0))
+
+        def update_preview(*_args):
+            try:
+                if scope_var.get() == "all":
+                    n = additional_fees.count_active_students(all_active=True)
+                    lbl_preview.config(text=f"Will affect ≈ {n} Active student(s).")
+                else:
+                    sel = [lb_classes.get(i) for i in lb_classes.curselection()]
+                    n = additional_fees.count_active_students(class_secs=sel)
+                    if sel:
+                        lbl_preview.config(
+                            text=f"Selected {len(sel)} class(es) → ≈ {n} Active student(s)."
+                        )
+                    else:
+                        lbl_preview.config(text="Select one or more classes above.")
+            except Exception:
+                lbl_preview.config(text="")
+
+        scope_var.trace_add("write", update_preview)
+        lb_classes.bind("<<ListboxSelect>>", update_preview)
+        update_preview()
+
+        skip_var = tk.BooleanVar(value=True)
+        tk.Checkbutton(
+            dlg,
+            text="Skip students who already have this fee type + academic year",
+            variable=skip_var, bg=theme.WHITE, font=theme.FONT_SMALL,
+            anchor="w",
+        ).pack(fill=tk.X, padx=14, pady=(4, 2))
+
+        def do_bulk():
+            t = type_map.get(cmb_type.get())
+            if not t:
+                messagebox.showerror("Error", "Select a fee type.", parent=dlg)
+                return
+            try:
+                amount = float(ent_amt.get().strip())
+            except ValueError:
+                messagebox.showerror("Invalid Amount", "Enter a valid number.", parent=dlg)
+                return
+            if amount <= 0:
+                messagebox.showerror("Invalid Amount", "Amount must be greater than zero.", parent=dlg)
+                return
+
+            all_active = scope_var.get() == "all"
+            class_secs = None
+            if not all_active:
+                class_secs = [lb_classes.get(i) for i in lb_classes.curselection()]
+                if not class_secs:
+                    messagebox.showerror(
+                        "No Class Selected",
+                        "Select at least one class, or choose All Active Students.",
+                        parent=dlg,
+                    )
+                    return
+
+            scope_label = (
+                "ALL Active students"
+                if all_active
+                else f"classes: {', '.join(class_secs)}"
+            )
+            if not messagebox.askyesno(
+                "Confirm Bulk Assign",
+                f"Assign {t['name']} of Rs. {amount:,.0f}\n"
+                f"to {scope_label}?\n\n"
+                f"Academic Year: {ent_year.get().strip() or '(none)'}\n"
+                f"Skip existing: {'Yes' if skip_var.get() else 'No'}",
+                parent=dlg,
+            ):
+                return
+
+            try:
+                result = additional_fees.bulk_assign(
+                    self.user_role,
+                    t["id"],
+                    amount,
+                    class_secs=class_secs,
+                    all_active=all_active,
+                    academic_year=ent_year.get().strip(),
+                    remarks=ent_remarks.get().strip(),
+                    actor=self.current_user,
+                    skip_if_exists=skip_var.get(),
+                )
+            except (ValueError, rbac.PermissionDenied) as e:
+                messagebox.showerror("Could Not Assign", str(e), parent=dlg)
+                return
+            except Exception as e:
+                messagebox.showerror("Error", str(e), parent=dlg)
+                return
+
+            messagebox.showinfo(
+                "Bulk Assign Complete",
+                f"Fee: {result.get('fee_type_name', t['name'])}  ·  "
+                f"Rs. {result.get('amount', amount):,.0f}\n\n"
+                f"Created: {len(result['created'])}\n"
+                f"Skipped (already had it): {len(result['skipped'])}\n"
+                f"Errors: {len(result['errors'])}",
+                parent=dlg,
+            )
+            dlg.destroy()
+            if self.student:
+                self._load_additional_fees()
+            self._notify_change()
+
+        theme.primary_button(
+            dlg, "💾 Assign Now", do_bulk, bg=theme.SUCCESS,
+        ).pack(pady=(8, 14))
 
 
 def launch_fee_management_window(parent, user_role, current_user, on_change=None):

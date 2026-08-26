@@ -19,11 +19,10 @@ import os
 from datetime import datetime
 
 import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
+from tkinter import ttk, messagebox
 
 import db
 import rbac
-import theme
 import reports
 import accounting
 
@@ -244,6 +243,10 @@ class TeacherPayrollWindow:
         toolbar = tk.Frame(right, bg=self.CARD)
         toolbar.pack(fill=tk.X, padx=16, pady=(14, 6))
         tk.Label(toolbar, text="TEACHERS DIRECTORY", font=("Segoe UI", 10, "bold"), bg=self.CARD, fg=self.NAVY).pack(side=tk.LEFT)
+        self.lbl_salary_month_status = tk.Label(
+            toolbar, text="", font=("Segoe UI", 8, "bold"), bg=self.CARD, fg=self.MUTED,
+        )
+        self.lbl_salary_month_status.pack(side=tk.LEFT, padx=(16, 0))
         tk.Button(toolbar, text="↻ Refresh", command=self.load_teacher_table, bg="#f1f5f9", fg=self.NAVY,
                   relief="flat", padx=10, pady=4, font=("Segoe UI", 8, "bold"), cursor="hand2").pack(side=tk.RIGHT)
 
@@ -278,19 +281,32 @@ class TeacherPayrollWindow:
         delete_btn.pack(side=tk.LEFT)
         delete_btn.config(state="normal" if self.can_delete_teacher else "disabled")
 
-        tk.Label(right, text="Search by Teacher ID or Name · click a row to load it into the form / attendance / payroll tabs · select a row then Edit / Delete / View Profile.",
-                 font=("Segoe UI", 8), bg=self.CARD, fg=self.MUTED, wraplength=680, justify="left").pack(anchor="w", padx=16, pady=(0, 8))
+        tk.Label(right, text="Search by ID or Name · click a row to load into form / attendance / payroll · Edit / Delete / View Profile · “This Month Salary” = Paid or Pending for the current calendar month (like student fee status).",
+                 font=("Segoe UI", 8), bg=self.CARD, fg=self.MUTED, wraplength=720, justify="left").pack(anchor="w", padx=16, pady=(0, 8))
 
         table_frame = tk.Frame(right, bg=self.CARD)
         table_frame.pack(fill=tk.BOTH, expand=True, padx=16, pady=(0, 16))
 
-        cols = ("id", "name", "desig", "phone", "salary", "joining") if self.can_view_salary else ("id", "name", "desig", "phone", "joining")
-        headers = {"id": "Teacher ID", "name": "Name", "desig": "Designation", "phone": "Phone",
-                   "salary": "Basic Salary", "joining": "Joining Date"}
+        # salary_status = this calendar month Paid / Pending (like student fee status)
+        if self.can_view_salary:
+            cols = ("id", "name", "desig", "phone", "salary", "joining", "salary_status")
+        else:
+            cols = ("id", "name", "desig", "phone", "joining", "salary_status")
+        headers = {
+            "id": "Teacher ID", "name": "Name", "desig": "Designation", "phone": "Phone",
+            "salary": "Basic Salary", "joining": "Joining Date",
+            "salary_status": "This Month Salary",
+        }
+        widths = {
+            "id": 100, "name": 140, "desig": 120, "phone": 110,
+            "salary": 100, "joining": 110, "salary_status": 130,
+        }
         self.tree_teacher = ttk.Treeview(table_frame, columns=cols, show="headings")
         for col in cols:
             self.tree_teacher.heading(col, text=headers[col])
-            self.tree_teacher.column(col, anchor="center")
+            self.tree_teacher.column(col, anchor="center", width=widths.get(col, 100), minwidth=70)
+        self.tree_teacher.tag_configure("paid", foreground="#166534")
+        self.tree_teacher.tag_configure("pending", foreground="#b45309")
         scroll = ttk.Scrollbar(table_frame, orient=tk.VERTICAL, command=self.tree_teacher.yview)
         self.tree_teacher.configure(yscroll=scroll.set)
         scroll.pack(side=tk.RIGHT, fill=tk.Y)
@@ -325,11 +341,38 @@ class TeacherPayrollWindow:
         cols_sql = "teacher_id, name, designation, phone, basic_salary, joining_date" if self.can_view_salary else "teacher_id, name, designation, phone, joining_date"
         if search:
             rows = db.run(f"SELECT {cols_sql} FROM teachers WHERE teacher_id LIKE ? OR name LIKE ?",
-                           (f"%{search}%", f"%{search}%"), fetchall=True)
+                           (f"%{search}%", f"%{search}%"), fetchall=True) or []
         else:
-            rows = db.run(f"SELECT {cols_sql} FROM teachers", fetchall=True)
+            rows = db.run(f"SELECT {cols_sql} FROM teachers", fetchall=True) or []
+
+        # This-month salary Paid / Pending map (same source of truth as payslip generation)
+        ym = datetime.now().strftime("%Y-%m")
+        month_label = datetime.now().strftime("%b %Y")
+        try:
+            paid_map = accounting.teacher_salary_status_map(ym)
+        except Exception:
+            paid_map = {}
+
+        paid_count = pending_count = 0
         for r in rows:
-            self.tree_teacher.insert("", tk.END, values=r)
+            t_id = r[0]
+            info = paid_map.get(t_id)
+            if info and info.get("paid"):
+                status_text = f"✅ Paid ({month_label})"
+                tag = "paid"
+                paid_count += 1
+            else:
+                status_text = f"⏳ Pending ({month_label})"
+                tag = "pending"
+                pending_count += 1
+            values = list(r) + [status_text]
+            self.tree_teacher.insert("", tk.END, values=values, tags=(tag,))
+
+        if hasattr(self, "lbl_salary_month_status"):
+            self.lbl_salary_month_status.config(
+                text=f"  ·  {month_label}:  {paid_count} Paid  ·  {pending_count} Pending",
+                fg="#166534" if pending_count == 0 and paid_count > 0 else self.MUTED,
+            )
 
     def fill_teacher_form(self, ev):
         selected = self.tree_teacher.focus()
@@ -684,7 +727,7 @@ class TeacherPayrollWindow:
     def load_payroll_teacher(self):
         """Resolve whatever Teacher ID is typed into the Payroll tab and show
         the matching name/basic salary, without requiring a Directory
-        selection first."""
+        selection first. Also shows this-month Paid / Pending status."""
         t_id = self.ent_pay_tch_id.get().strip()
         if not t_id:
             self.lbl_pay_tch_name.config(text="Enter a Teacher ID first.", fg=self.RED)
@@ -696,7 +739,18 @@ class TeacherPayrollWindow:
             self.lbl_pay_basic_sal.config(text="—")
             return
         name, basic_sal = row
-        self.lbl_pay_tch_name.config(text=f"✓ {name}", fg=self.GREEN)
+        month_label = datetime.now().strftime("%b %Y")
+        try:
+            paid = accounting.is_teacher_salary_paid_this_month(t_id)
+        except Exception:
+            paid = False
+        if paid:
+            status = f"✓ {name}  ·  This month ({month_label}): ✅ Paid"
+            color = self.GREEN
+        else:
+            status = f"✓ {name}  ·  This month ({month_label}): ⏳ Pending"
+            color = self.AMBER
+        self.lbl_pay_tch_name.config(text=status, fg=color)
         self.lbl_pay_basic_sal.config(text=f"Rs. {basic_sal:,.2f}")
 
     def _load_teacher_into_payroll_page(self):
@@ -764,6 +818,11 @@ class TeacherPayrollWindow:
                   f"Net Payable: Rs. {net_sal:,.2f}   (recorded as an accounting expense)"))
 
         messagebox.showinfo("Success", f"Payslip PDF Generated:\n{out_path}\nNet Payable: Rs. {net_sal:.2f}\n(Recorded as an accounting expense.)")
+        # Directory status column flips Pending → Paid for this teacher this month
+        try:
+            self.load_teacher_table()
+        except Exception:
+            pass
 
     # ------------------------------------------------------------
     # TEACHER PROFILE — full monthly + yearly attendance & salary history

@@ -1,7 +1,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Iterable, List, Optional, Sequence, Tuple
 
 import db
 

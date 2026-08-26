@@ -54,6 +54,19 @@ def _today() -> str:
     return datetime.now().strftime("%Y-%m-%d")
 
 
+def _assert_current_billing_period(billing_month: int, billing_year: int) -> None:
+    """Reject any attempt to create past or future cycles.
+    Ledger sequence stays strictly chronological from the real system date.
+    """
+    now = datetime.now()
+    if int(billing_month) != now.month or int(billing_year) != now.year:
+        raise ValueError(
+            f"Fee cycles may only be generated for the current calendar month "
+            f"({now.month:02d}/{now.year}). "
+            f"Requested {int(billing_month):02d}/{int(billing_year)} is not allowed."
+        )
+
+
 def compute_status(amount_due: float, amount_paid: float, due_date: Optional[str],
                     grace_period_days: int = 0, as_of: Optional[str] = None) -> str:
     """Pure function — derives status from numbers only, never hand-set.
@@ -154,6 +167,8 @@ def generate_cycle(role: str, student_id: str, billing_month: int, billing_year:
     if not (1 <= billing_month <= 12):
         raise ValueError("billing_month must be between 1 and 12.")
 
+    _assert_current_billing_period(billing_month, billing_year)
+
     student = db.run(
         "SELECT student_id, class_sec, total_fee, status FROM students WHERE student_id=?",
         (student_id,), fetchone=True,
@@ -237,6 +252,7 @@ def bulk_generate_cycle(role: str, billing_month: int, billing_year: int, actor:
     (used by auto monthly generation). Existing cycles are never modified.
     """
     rbac.require(role, "fee.cycle.generate")
+    _assert_current_billing_period(billing_month, billing_year)
 
     students = db.run(
         "SELECT student_id FROM students WHERE COALESCE(status,'Active')='Active'", fetchall=True,

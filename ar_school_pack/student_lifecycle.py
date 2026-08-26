@@ -54,9 +54,17 @@ def get_dependency_counts(student_id: str) -> dict:
     year_rows = db.run(
         "SELECT COUNT(*) FROM student_academic_year WHERE student_id=?", (student_id,), fetchone=True
     )[0]
-    admission_extra = db.run(
-        "SELECT COUNT(*) FROM student_admission_extra WHERE student_id=?", (student_id,), fetchone=True
-    )[0]
+    # student_admission_extra is created lazily by student_admission.py (see
+    # db.py), so it may not exist yet on a fresh database / for a student
+    # added before that table was first created — guard the same way the
+    # fee ledger tables below are guarded.
+    admission_extra = 0
+    try:
+        admission_extra = db.run(
+            "SELECT COUNT(*) FROM student_admission_extra WHERE student_id=?", (student_id,), fetchone=True
+        )[0]
+    except Exception:
+        pass
     # Fee ledger tables may not exist on a database that hasn't run the
     # (additive) fee-system migration yet — guard so this still works on
     # an older DB, same defensive style as the rest of this function.
@@ -126,7 +134,12 @@ def permanent_delete_student(role: str, student_id: str, actor: str) -> dict:
         cur.execute("DELETE FROM attendance WHERE student_id=?", (student_id,))
         cur.execute("DELETE FROM marks WHERE student_id=?", (student_id,))
         cur.execute("DELETE FROM student_academic_year WHERE student_id=?", (student_id,))
-        cur.execute("DELETE FROM student_admission_extra WHERE student_id=?", (student_id,))
+        # student_admission_extra is created lazily by student_admission.py,
+        # so it may not exist yet — check before deleting from it, same as
+        # the read-only count in get_dependency_counts() above.
+        cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='student_admission_extra'")
+        if cur.fetchone():
+            cur.execute("DELETE FROM student_admission_extra WHERE student_id=?", (student_id,))
         cur.execute("DELETE FROM students WHERE student_id=?", (student_id,))
 
         cur.execute("SELECT 1 FROM students WHERE student_id=?", (student_id,))

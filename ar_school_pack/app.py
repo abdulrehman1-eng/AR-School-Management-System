@@ -8,7 +8,6 @@ import db
 import rbac
 import branding
 import accounting
-import results_engine
 import reports
 import theme
 import ai_assistant
@@ -16,6 +15,7 @@ from fee_management_window import launch_fee_management_window
 import fee_automation
 from student_admission import launch_admission_window
 from student_profile import launch_student_profile_window
+from student_directory import build_student_directory_into
 from results_window import build_results_into, launch_results_window
 from smart_attendance import launch_attendance_window
 try:
@@ -33,6 +33,18 @@ except ImportError:
     launch_teacher_payroll_window = _teacher_payroll_module.launch_teacher_payroll_window
 from security import hash_password, verify_password
 from settings_window import build_settings_tab as build_settings_panel
+from finance_window import build_finance_into, launch_finance_window
+
+# Optional Timetable module — if missing or broken, legacy inline UI is used
+# so the rest of the app never fails to start.
+try:
+    from timetable_window import build_timetable_into, launch_timetable_window
+    HAS_TIMETABLE_MODULE = True
+except Exception as _tt_import_err:
+    print(f"[Timetable] Module not loaded (using legacy UI): {_tt_import_err}")
+    HAS_TIMETABLE_MODULE = False
+    build_timetable_into = None
+    launch_timetable_window = None
 
 try:
     import matplotlib.pyplot as plt
@@ -446,71 +458,12 @@ class StudentManagementApp:
         return launch_admission_window(self.root, self.user_role, self.current_user)
 
     def open_student_profile(self):
-        """Open the professional Student Profile for the selected directory row."""
-        if not rbac.can(self.user_role, "student.view"):
-            messagebox.showerror("Permission Denied", "You are not allowed to view student profiles.")
-            return
-        selected = self.tree_student.focus()
-        values = self.tree_student.item(selected, "values") if selected else ()
-        if not values:
-            messagebox.showinfo("Select Student", "Please select a student from the directory first.")
-            return
-        student_id = values[0]
-        win = launch_student_profile_window(self.root, self.user_role, self.current_user)
-        if win and hasattr(win, "ent_search"):
-            win.ent_search.insert(0, student_id)
-            win.search_student()
+        if getattr(self, "_student_dir", None):
+            self._student_dir._open_profile()
 
     def reprint_selected_id_card(self):
-        """Regenerate ID card for the student selected in the directory."""
-        if not rbac.can(self.user_role, "student.view"):
-            messagebox.showerror("Permission Denied", "You are not allowed to view student profiles.")
-            return
-        selected = self.tree_student.focus()
-        values = self.tree_student.item(selected, "values") if selected else ()
-        if not values:
-            messagebox.showinfo("Select Student", "Please select a student from the directory first.")
-            return
-        s_id = values[0]
-        row = db.run(
-            "SELECT name, father_name, class_sec, phone, photo_path FROM students WHERE student_id=?",
-            (s_id,), fetchone=True,
-        )
-        if not row:
-            messagebox.showerror("Not Found", f"Student '{s_id}' not found.")
-            return
-        name, father_name, cls, phone, photo_path = row
-        emer = ""
-        try:
-            er = db.run(
-                "SELECT emergency_contact_phone FROM student_admission_extra WHERE student_id=?",
-                (s_id,), fetchone=True,
-            )
-            if er and er[0]:
-                emer = er[0]
-        except Exception:
-            pass
-        out_path = os.path.join(os.getcwd(), f"ID_Card_{s_id}.pdf")
-        try:
-            reports.generate_id_card(
-                s_id, name, cls, out_path, father_name=father_name or "", phone=phone or "",
-                photo_path=photo_path, emergency_phone=emer,
-            )
-        except Exception as e:
-            messagebox.showerror("ID Card Error", f"Could not generate ID card:\n{e}")
-            return
-        try:
-            if os.name == "nt":
-                os.startfile(out_path)
-            elif shutil.which("xdg-open"):
-                os.system(f'xdg-open "{out_path}"')
-            elif shutil.which("open"):
-                os.system(f'open "{out_path}"')
-        except Exception:
-            pass
-        log_activity(self.current_user, f"Regenerated ID card for student {s_id}")
-        messagebox.showinfo("ID Card Ready", f"ID Card generated:\n{out_path}")
-
+        if getattr(self, "_student_dir", None):
+            self._student_dir._reprint_id_card()
 
     def open_fee_management(self):
         """Open the single, authoritative Fee Management window (merges
@@ -600,7 +553,7 @@ class StudentManagementApp:
             count = result.get("count", 0)
             total = result.get("total_amount", 0)
             path = result.get("path", "")
-            result_box.insert(tk.END, f"✅ Excel file ready.\n\n")
+            result_box.insert(tk.END, "✅ Excel file ready.\n\n")
             result_box.insert(tk.END, f"Students with remaining fee: {count}\n")
             result_box.insert(tk.END, f"Total remaining amount: Rs. {total:,.2f}\n\n")
             result_box.insert(tk.END, f"File saved at:\n{path}\n\n")
@@ -761,8 +714,25 @@ class StudentManagementApp:
         archived_students = db.run("SELECT COUNT(*) FROM students WHERE status='Archived'", fetchone=True)[0]
         total_teachers = db.run("SELECT COUNT(*) FROM teachers", fetchone=True)[0]
         today = datetime.now().strftime("%Y-%m-%d")
-        present_today = db.run("SELECT COUNT(*) FROM attendance WHERE date=? AND status='Present'", (today,), fetchone=True)[0]
-        absent_today = db.run("SELECT COUNT(*) FROM attendance WHERE date=? AND status='Absent'", (today,), fetchone=True)[0]
+        # Present Today = physically present (Present + Late). Leave stays
+        # separate from Absent — shown only as a subtitle accent.
+        late_today = db.run(
+            "SELECT COUNT(*) FROM attendance WHERE date=? AND status='Late'",
+            (today,), fetchone=True,
+        )[0]
+        present_only = db.run(
+            "SELECT COUNT(*) FROM attendance WHERE date=? AND status='Present'",
+            (today,), fetchone=True,
+        )[0]
+        present_today = present_only + late_today
+        absent_today = db.run(
+            "SELECT COUNT(*) FROM attendance WHERE date=? AND status='Absent'",
+            (today,), fetchone=True,
+        )[0]
+        leave_today = db.run(
+            "SELECT COUNT(*) FROM attendance WHERE date=? AND status='Leave'",
+            (today,), fetchone=True,
+        )[0]
         pending_fees = db.run("SELECT COALESCE(SUM(total_fee-paid_fee),0) FROM students WHERE COALESCE(status,'Active')='Active' AND total_fee > paid_fee", fetchone=True)[0]
 
         cards_row = tk.Frame(self.dash_body, bg=theme.SILVER)
@@ -770,8 +740,16 @@ class StudentManagementApp:
         theme.stat_card(cards_row, "Active Students", total_students, theme.BRAND_BLUE,
                          subtitle=f"{archived_students} archived").pack(side=tk.LEFT, padx=(0, 12), fill=tk.BOTH, expand=True)
         theme.stat_card(cards_row, "Teachers", total_teachers, theme.SLATE).pack(side=tk.LEFT, padx=12, fill=tk.BOTH, expand=True)
-        theme.stat_card(cards_row, "Present Today", present_today, theme.SUCCESS).pack(side=tk.LEFT, padx=12, fill=tk.BOTH, expand=True)
-        theme.stat_card(cards_row, "Absent Today", absent_today, theme.DANGER).pack(side=tk.LEFT, padx=(12, 0), fill=tk.BOTH, expand=True)
+        present_subtitle = f"{late_today} late" if late_today else None
+        theme.stat_card(
+            cards_row, "Present Today", present_today, theme.SUCCESS,
+            subtitle=present_subtitle,
+        ).pack(side=tk.LEFT, padx=12, fill=tk.BOTH, expand=True)
+        absent_subtitle = f"{leave_today} on leave" if leave_today else None
+        theme.stat_card(
+            cards_row, "Absent Today", absent_today, theme.DANGER,
+            subtitle=absent_subtitle,
+        ).pack(side=tk.LEFT, padx=(12, 0), fill=tk.BOTH, expand=True)
 
         if rbac.can(self.user_role, "student.fee.view"):
             cards_row2 = tk.Frame(self.dash_body, bg=theme.SILVER)
@@ -781,8 +759,10 @@ class StudentManagementApp:
                 totals = accounting.dashboard_totals(self.user_role)
                 theme.stat_card(cards_row2, "This Month Revenue (Rs.)", f"{totals['month_revenue']:,.0f}", theme.SUCCESS).pack(side=tk.LEFT, padx=12, fill=tk.BOTH, expand=True)
                 theme.stat_card(cards_row2, "This Month Expenses (Rs.)", f"{totals['month_expense']:,.0f}", theme.DANGER).pack(side=tk.LEFT, padx=12, fill=tk.BOTH, expand=True)
-                theme.stat_card(cards_row2, "Net Income (Rs.)", f"{totals['net_income']:,.0f}",
-                                 theme.SUCCESS if totals['net_income'] >= 0 else theme.DANGER).pack(side=tk.LEFT, padx=(12, 0), fill=tk.BOTH, expand=True)
+                month_net = totals.get("month_net_income",
+                                       float(totals["month_revenue"] or 0) - float(totals["month_expense"] or 0))
+                theme.stat_card(cards_row2, "This Month Net Income (Rs.)", f"{month_net:,.0f}",
+                                 theme.SUCCESS if month_net >= 0 else theme.DANGER).pack(side=tk.LEFT, padx=(12, 0), fill=tk.BOTH, expand=True)
 
         # ----- quick actions -----
         actions_card, actions_body = theme.section_card(self.dash_body, "Quick Actions")
@@ -850,130 +830,43 @@ class StudentManagementApp:
     # TAB 1: ADMISSION
     # ------------------------------------------
     def build_admission_tab(self):
-        """Students page: directory + one professional New Admission entry point.
+        """Students page — directory owned by student_directory.py."""
+        for child in self.tab_admission.winfo_children():
+            child.destroy()
 
-        The old inline admission form is intentionally no longer rendered.
-        New admissions are handled exclusively by student_admission.py so the
-        user never sees two different admission forms.
-        """
-        can_add = rbac.can(self.user_role, "student.add")
-        can_delete = rbac.can(self.user_role, "student.delete")
+        def _open_admission():
+            self.open_admission()
 
-        header = tk.Frame(self.tab_admission, bg=theme.NAVY, padx=16, pady=12)
-        header.pack(fill=tk.X, padx=10, pady=(10, 8))
-        tk.Label(header, text="🎓 STUDENT MANAGEMENT", font=theme.FONT_H1,
-                 bg=theme.NAVY, fg="white").pack(side=tk.LEFT)
-        if can_add:
-            theme.primary_button(header, "➕ New Student Admission", self.open_admission,
-                                 bg=theme.SUCCESS).pack(side=tk.RIGHT)
+        def _open_profile(student_id):
+            if not rbac.can(self.user_role, "student.view"):
+                messagebox.showerror(
+                    "Permission Denied",
+                    "You are not allowed to view student profiles.",
+                )
+                return
+            win = launch_student_profile_window(
+                self.root, self.user_role, self.current_user
+            )
+            if win and hasattr(win, "ent_search"):
+                win.ent_search.insert(0, student_id)
+                win.search_student()
 
-        directory = theme.section_card(self.tab_admission, "Student Directory")
-        directory_card, body = directory
-        directory_card.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
+        def _on_changed():
+            try:
+                self.refresh_dashboard()
+            except Exception:
+                pass
 
-        search_bar = tk.Frame(body, bg=theme.WHITE)
-        search_bar.pack(fill=tk.X, pady=(0, 4))
-        tk.Label(search_bar, text="Search:", font=theme.FONT_SMALL, bg=theme.WHITE).pack(side=tk.LEFT, padx=(0, 4))
-        self.ent_search = tk.Entry(search_bar, font=theme.FONT_BODY)
-        self.ent_search.pack(side=tk.LEFT, padx=(0, 8), ipady=3, fill=tk.X, expand=True)
-        self.ent_search.bind("<KeyRelease>", self.load_student_table)
-
-        # ---- Filters row: Fee / Class / Status ----
-        filter_bar = tk.Frame(body, bg=theme.WHITE)
-        filter_bar.pack(fill=tk.X, pady=(0, 8))
-
-        tk.Label(filter_bar, text="Fee:", font=theme.FONT_SMALL, bg=theme.WHITE,
-                 fg=theme.TEXT_MUTED).pack(side=tk.LEFT, padx=(0, 4))
-        self.cmb_fee_filter = ttk.Combobox(
-            filter_bar,
-            values=[
-                "All Fees",
-                "Fee Pending",
-                "Fee Paid",
-                "Fee Overdue",
-                "Partial Payment",
-            ],
-            state="readonly",
-            width=16,
-            font=theme.FONT_SMALL,
+        self._student_dir = build_student_directory_into(
+            self.tab_admission,
+            self.user_role,
+            self.current_user,
+            app_callbacks={
+                "open_admission": _open_admission,
+                "open_student_profile": _open_profile,
+                "on_students_changed": _on_changed,
+            },
         )
-        self.cmb_fee_filter.set("All Fees")
-        self.cmb_fee_filter.pack(side=tk.LEFT, padx=(0, 12))
-        self.cmb_fee_filter.bind("<<ComboboxSelected>>", self.load_student_table)
-
-        tk.Label(filter_bar, text="Class:", font=theme.FONT_SMALL, bg=theme.WHITE,
-                 fg=theme.TEXT_MUTED).pack(side=tk.LEFT, padx=(0, 4))
-        self.cmb_class_filter = ttk.Combobox(
-            filter_bar, values=["All Classes"], state="readonly", width=14, font=theme.FONT_SMALL,
-        )
-        self.cmb_class_filter.set("All Classes")
-        self.cmb_class_filter.pack(side=tk.LEFT, padx=(0, 12))
-        self.cmb_class_filter.bind("<<ComboboxSelected>>", self.load_student_table)
-
-        tk.Label(filter_bar, text="Status:", font=theme.FONT_SMALL, bg=theme.WHITE,
-                 fg=theme.TEXT_MUTED).pack(side=tk.LEFT, padx=(0, 4))
-        self.cmb_status_filter = ttk.Combobox(
-            filter_bar,
-            values=["Active Only", "Archived Only", "All Status"],
-            state="readonly",
-            width=14,
-            font=theme.FONT_SMALL,
-        )
-        self.cmb_status_filter.set("Active Only")
-        self.cmb_status_filter.pack(side=tk.LEFT, padx=(0, 12))
-        self.cmb_status_filter.bind("<<ComboboxSelected>>", self.load_student_table)
-
-        # Legacy checkbox kept in sync with Status filter for older call sites
-        self.show_archived_var = tk.BooleanVar(value=False)
-
-        theme.primary_button(
-            filter_bar, "↻ Clear Filters", self._clear_student_filters, bg=theme.SLATE,
-        ).pack(side=tk.LEFT, padx=(4, 8))
-
-        self.lbl_student_count = tk.Label(
-            filter_bar, text="", font=theme.FONT_SMALL, bg=theme.WHITE, fg=theme.TEXT_MUTED,
-        )
-        self.lbl_student_count.pack(side=tk.RIGHT, padx=4)
-
-        action_bar = tk.Frame(body, bg=theme.WHITE)
-        action_bar.pack(fill=tk.X, pady=(0, 8))
-        if can_add:
-            theme.primary_button(action_bar, "➕ New Student Admission", self.open_admission,
-                                 bg=theme.SUCCESS).pack(side=tk.LEFT, padx=(0, 8))
-        can_edit = rbac.can(self.user_role, "student.edit")
-        if can_edit:
-            theme.primary_button(action_bar, "✏️ Edit Student", self.edit_selected_student,
-                                 bg=theme.SLATE).pack(side=tk.LEFT, padx=(0, 8))
-        if can_delete:
-            theme.primary_button(action_bar, "🗑 Remove Student", self.remove_selected_student,
-                                 bg=theme.DANGER).pack(side=tk.LEFT, padx=(0, 8))
-        if rbac.can(self.user_role, "student.view"):
-            theme.primary_button(action_bar, "👤 View Profile", self.open_student_profile,
-                                 bg=theme.BRAND_BLUE).pack(side=tk.LEFT, padx=(8, 0))
-            theme.primary_button(action_bar, "🪪 ID Card", self.reprint_selected_id_card,
-                                 bg=theme.SLATE).pack(side=tk.LEFT, padx=(8, 0))
-        theme.primary_button(
-            action_bar, "📁 Export Excel", self.export_student_directory_excel, bg=theme.SUCCESS,
-        ).pack(side=tk.RIGHT, padx=(8, 0))
-
-        cols = ("id", "name", "fname", "class", "phone", "status")
-        if rbac.can(self.user_role, "student.fee.view"):
-            cols = ("id", "name", "fname", "class", "phone", "total_fee", "paid_fee", "balance", "status")
-
-        table_frame = tk.Frame(body, bg=theme.WHITE)
-        table_frame.pack(fill=tk.BOTH, expand=True)
-        self.tree_student = ttk.Treeview(table_frame, columns=cols, show="headings")
-        col_widths = {"id": 90, "name": 150, "fname": 130, "class": 80, "phone": 110,
-                      "total_fee": 85, "paid_fee": 85, "balance": 85, "status": 85}
-        for col in cols:
-            self.tree_student.heading(col, text=col.upper().replace("_", " "))
-            self.tree_student.column(col, width=col_widths.get(col, 90), anchor="center")
-
-        scroll = ttk.Scrollbar(table_frame, orient=tk.VERTICAL, command=self.tree_student.yview)
-        self.tree_student.configure(yscroll=scroll.set)
-        scroll.pack(side=tk.RIGHT, fill=tk.Y)
-        self.tree_student.pack(fill=tk.BOTH, expand=True)
-        self.load_student_table()
 
     def browse_photo(self):
         file_path = filedialog.askopenfilename(filetypes=[("Image Files", "*.jpg *.png *.jpeg")])
@@ -1041,235 +934,12 @@ class StudentManagementApp:
         return outstanding, has_overdue, has_partial
 
     def load_student_table(self, ev=None):
-        search = self.ent_search.get().strip() if hasattr(self, "ent_search") else ""
-        self.tree_student.delete(*self.tree_student.get_children())
-        self._refresh_class_filter_options()
-
-        fee_filter = getattr(self, "cmb_fee_filter", None)
-        fee_filter = fee_filter.get() if fee_filter else "All Fees"
-        class_filter = getattr(self, "cmb_class_filter", None)
-        class_filter = class_filter.get() if class_filter else "All Classes"
-        status_filter = getattr(self, "cmb_status_filter", None)
-        status_filter = status_filter.get() if status_filter else "Active Only"
-
-        # Keep legacy checkbox in sync
-        if hasattr(self, "show_archived_var"):
-            self.show_archived_var.set(status_filter in ("Archived Only", "All Status"))
-
-        rows = db.run(
-            "SELECT student_id, name, father_name, phone, class_sec, "
-            "COALESCE(total_fee, 0), COALESCE(paid_fee, 0), COALESCE(status, 'Active') "
-            "FROM students",
-            fetchall=True,
-        ) or []
-
-        cycle_outstanding, has_overdue, has_partial = self._student_fee_maps()
-        show_fee = rbac.can(self.user_role, "student.fee.view")
-        shown = 0
-
-        for s_id, name, fname, phone, cls, total_f, paid_f, status in rows:
-            status = status or "Active"
-            total_f = float(total_f or 0)
-            paid_f = float(paid_f or 0)
-
-            # Status filter
-            if status_filter == "Active Only" and status != "Active":
-                continue
-            if status_filter == "Archived Only" and status != "Archived":
-                continue
-
-            # Class filter
-            if class_filter and class_filter != "All Classes":
-                if (cls or "") != class_filter:
-                    continue
-
-            # Search (ID / name / father / phone / class)
-            if search:
-                q = search.lower()
-                hay = " ".join([
-                    str(s_id or ""), str(name or ""), str(fname or ""),
-                    str(phone or ""), str(cls or ""),
-                ]).lower()
-                if q not in hay:
-                    continue
-
-            # Fee balance: ledger first, else classic total_fee - paid_fee
-            if s_id in cycle_outstanding:
-                bal = cycle_outstanding[s_id]
-            else:
-                bal = total_f - paid_f
-
-            # Fee filters
-            if fee_filter == "Fee Pending":
-                if bal <= 0:
-                    continue
-            elif fee_filter == "Fee Paid":
-                if bal > 0:
-                    continue
-            elif fee_filter == "Fee Overdue":
-                if s_id not in has_overdue:
-                    # Fallback: treat any positive balance with no cycles as not overdue
-                    continue
-            elif fee_filter == "Partial Payment":
-                if s_id not in has_partial:
-                    # Fallback partial: some paid but still outstanding
-                    if not (paid_f > 0 and bal > 0 and s_id not in cycle_outstanding):
-                        continue
-
-            if show_fee:
-                self.tree_student.insert(
-                    "", tk.END,
-                    values=(s_id, name, fname or "", cls or "", phone or "",
-                            f"{total_f:,.0f}", f"{paid_f:,.0f}", f"{bal:,.0f}", status),
-                )
-            else:
-                self.tree_student.insert(
-                    "", tk.END,
-                    values=(s_id, name, fname or "", cls or "", phone or "", status),
-                )
-            shown += 1
-
-        if hasattr(self, "lbl_student_count"):
-            parts = [f"{shown} student(s)"]
-            if fee_filter != "All Fees":
-                parts.append(fee_filter)
-            if class_filter != "All Classes":
-                parts.append(class_filter)
-            if status_filter != "Active Only":
-                parts.append(status_filter)
-            self.lbl_student_count.config(text=" · ".join(parts))
+        if getattr(self, "_student_dir", None):
+            self._student_dir.load_table()
 
     def export_student_directory_excel(self):
-        """Export the currently filtered Student Directory rows to an Excel file.
-
-        Columns match what the user sees (including fee columns when permitted).
-        A header row notes active filters so the file is self-describing.
-        """
-        if not rbac.can(self.user_role, "student.view"):
-            messagebox.showerror("Permission Denied", "You are not allowed to export the student list.", parent=self.root)
-            return
-
-        items = self.tree_student.get_children()
-        if not items:
-            messagebox.showinfo(
-                "Nothing to Export",
-                "Current filters show no students.\n"
-                "Change filters or clear them, then try again.",
-                parent=self.root,
-            )
-            return
-
-        show_fee = rbac.can(self.user_role, "student.fee.view")
-        if show_fee:
-            headers = [
-                "Student ID", "Name", "Father Name", "Class", "Phone",
-                "Total Fee", "Paid Fee", "Balance", "Status",
-            ]
-        else:
-            headers = ["Student ID", "Name", "Father Name", "Class", "Phone", "Status"]
-
-        fee_f = getattr(self, "cmb_fee_filter", None)
-        fee_f = fee_f.get() if fee_f else "All Fees"
-        class_f = getattr(self, "cmb_class_filter", None)
-        class_f = class_f.get() if class_f else "All Classes"
-        status_f = getattr(self, "cmb_status_filter", None)
-        status_f = status_f.get() if status_f else "Active Only"
-        search_q = self.ent_search.get().strip() if hasattr(self, "ent_search") else ""
-
-        default_name = f"Student_List_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-        path = filedialog.asksaveasfilename(
-            title="Save Student List as Excel",
-            defaultextension=".xlsx",
-            initialfile=default_name,
-            filetypes=[("Excel Workbook", "*.xlsx"), ("All Files", "*.*")],
-            parent=self.root,
-        )
-        if not path:
-            return
-        if not path.lower().endswith(".xlsx"):
-            path += ".xlsx"
-
-        try:
-            from openpyxl import Workbook
-            from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
-        except ImportError:
-            messagebox.showerror(
-                "Missing Library",
-                "openpyxl is required for Excel export.\n"
-                "Install with: pip install openpyxl",
-                parent=self.root,
-            )
-            return
-
-        try:
-            wb = Workbook()
-            ws = wb.active
-            ws.title = "Students"
-
-            # Title + filter summary
-            title = "Student Directory Export — AR School Management System"
-            ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(headers))
-            cell = ws.cell(row=1, column=1, value=title)
-            cell.font = Font(name="Segoe UI", size=14, bold=True, color="FFFFFF")
-            cell.fill = PatternFill("solid", fgColor="0F172A")
-            cell.alignment = Alignment(horizontal="left", vertical="center")
-            ws.row_dimensions[1].height = 24
-
-            filter_bits = [f"Exported: {datetime.now().strftime('%Y-%m-%d %H:%M')}"]
-            filter_bits.append(f"Fee filter: {fee_f}")
-            filter_bits.append(f"Class: {class_f}")
-            filter_bits.append(f"Status: {status_f}")
-            if search_q:
-                filter_bits.append(f"Search: {search_q}")
-            filter_bits.append(f"Rows: {len(items)}")
-            ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=len(headers))
-            ws.cell(row=2, column=1, value="  |  ".join(filter_bits)).font = Font(
-                name="Segoe UI", size=9, italic=True, color="64748B"
-            )
-
-            header_fill = PatternFill("solid", fgColor="0284C7")
-            header_font = Font(name="Segoe UI", bold=True, color="FFFFFF")
-            thin = Border(
-                left=Side(style="thin", color="E2E8F0"),
-                right=Side(style="thin", color="E2E8F0"),
-                top=Side(style="thin", color="E2E8F0"),
-                bottom=Side(style="thin", color="E2E8F0"),
-            )
-            for col_idx, h in enumerate(headers, start=1):
-                c = ws.cell(row=4, column=col_idx, value=h)
-                c.font = header_font
-                c.fill = header_fill
-                c.alignment = Alignment(horizontal="center", vertical="center")
-                c.border = thin
-
-            for row_idx, item_id in enumerate(items, start=5):
-                values = self.tree_student.item(item_id, "values")
-                for col_idx, val in enumerate(values, start=1):
-                    c = ws.cell(row=row_idx, column=col_idx, value=val)
-                    c.font = Font(name="Segoe UI", size=10)
-                    c.border = thin
-                    c.alignment = Alignment(horizontal="center" if col_idx != 2 else "left")
-
-            from openpyxl.utils import get_column_letter
-            widths = {1: 14, 2: 22, 3: 18, 4: 12, 5: 14, 6: 12, 7: 12, 8: 12, 9: 12}
-            for col_idx in range(1, len(headers) + 1):
-                ws.column_dimensions[get_column_letter(col_idx)].width = widths.get(col_idx, 14)
-
-            wb.save(path)
-        except Exception as e:
-            messagebox.showerror("Export Failed", f"Could not write Excel file:\n{e}", parent=self.root)
-            return
-
-        log_activity(
-            self.current_user,
-            f"Exported student directory Excel ({len(items)} rows) "
-            f"filters=[fee={fee_f}, class={class_f}, status={status_f}, search={search_q or '-'}]",
-        )
-        messagebox.showinfo(
-            "Export Complete",
-            f"{len(items)} student(s) exported.\n\nSaved to:\n{path}",
-            parent=self.root,
-        )
+        if getattr(self, "_student_dir", None):
+            self._student_dir._export_excel()
 
     def save_student(self):
         if not rbac.can(self.user_role, "student.add"):
@@ -1470,429 +1140,17 @@ class StudentManagementApp:
                   font=theme.FONT_SMALL, cursor="hand2").pack(pady=(6, 0))
 
     def _get_selected_student_id(self):
-        """Returns (student_id, name) for the currently selected directory
-        row, or (None, None) if nothing is selected."""
-        selected = self.tree_student.focus()
-        values = self.tree_student.item(selected, "values") if selected else ()
-        if not values:
-            return None, None
-        return values[0], values[1]
+        if getattr(self, "_student_dir", None):
+            return self._student_dir.get_selected_student_id()
+        return None, None
 
     def remove_selected_student(self):
-        """Permanently remove the currently selected student."""
-        if not rbac.can(self.user_role, "student.delete"):
-            messagebox.showerror(
-                "Permission Denied",
-                "You are not allowed to remove students.",
-                parent=self.root
-            )
-            return
-
-        # Get the selected row directly from the Students Directory.
-        selected = self.tree_student.selection()
-        if not selected:
-            messagebox.showwarning(
-                "Select Student",
-                "Pehle Students Directory se student select karein.",
-                parent=self.root
-            )
-            return
-
-        item_id = selected[0]
-        values = self.tree_student.item(item_id, "values")
-        if not values:
-            messagebox.showwarning(
-                "Select Student",
-                "Selected student ki information nahi mili.",
-                parent=self.root
-            )
-            return
-
-        student_id = str(values[0]).strip()
-        student_name = str(values[1]).strip() if len(values) > 1 else student_id
-
-        # Verify the record before deleting it.
-        row = db.run(
-            "SELECT student_id, name FROM students WHERE student_id=?",
-            (student_id,),
-            fetchone=True
-        )
-        if not row:
-            messagebox.showerror(
-                "Student Not Found",
-                f"Student ID '{student_id}' database mein nahi mila.",
-                parent=self.root
-            )
-            self.load_student_table()
-            return
-
-        confirm = messagebox.askyesno(
-            "Confirm Remove Student",
-            f"Student ko permanently remove karna hai?\n\n"
-            f"Student: {row[1]}\n"
-            f"Student ID: {row[0]}\n\n"
-            "⚠️ Ye action undo nahi ho sakta.",
-            icon="warning",
-            parent=self.root
-        )
-        if not confirm:
-            return
-
-        try:
-            # Remove the profile/admission-extra row first.
-            db.run(
-                "DELETE FROM student_admission_extra WHERE student_id=?",
-                (student_id,),
-                commit=True
-            )
-
-            # Remove the main student record.
-            db.run(
-                "DELETE FROM students WHERE student_id=?",
-                (student_id,),
-                commit=True
-            )
-
-            # Confirm that deletion actually happened.
-            still_there = db.run(
-                "SELECT student_id FROM students WHERE student_id=?",
-                (student_id,),
-                fetchone=True
-            )
-            if still_there:
-                raise RuntimeError(
-                    "Student database se remove nahi hua."
-                )
-
-            log_activity(
-                self.current_user,
-                f"Permanently removed student record {student_id} ({student_name})"
-            )
-
-            # Refresh directory and clear any old selection.
-            self.load_student_table()
-
-            messagebox.showinfo(
-                "Student Removed",
-                f"Student '{student_name}' ({student_id}) successfully remove ho gaya.",
-                parent=self.root
-            )
-
-        except Exception as exc:
-            messagebox.showerror(
-                "Remove Failed",
-                f"Student remove nahi ho saka.\n\nError:\n{exc}",
-                parent=self.root
-            )
+        if getattr(self, "_student_dir", None):
+            self._student_dir._remove_selected()
 
     def edit_selected_student(self):
-        """Edit the complete selected student profile, including admission-extra data."""
-        if not rbac.can(self.user_role, "student.edit"):
-            messagebox.showerror("Permission Denied", "You are not allowed to edit students.")
-            return
-
-        s_id, _ = self._get_selected_student_id()
-        if not s_id:
-            messagebox.showinfo("Select Student", "Please select a student from the directory first.")
-            return
-
-        row = db.run(
-            """SELECT student_id, name, father_name, dob, phone, address, class_sec,
-                      photo_path, prev_education, total_fee, paid_fee, status
-               FROM students WHERE student_id=?""",
-            (s_id,), fetchone=True)
-        if not row:
-            messagebox.showerror("Error", "Student not found.")
-            return
-
-        extra = db.run(
-            """SELECT gender, blood_group, nationality, religion, mother_name, guardian_name,
-                      guardian_cnic, occupation, alt_phone, email, current_address, city, area,
-                      admission_date, academic_year, admission_type, emergency_contact_name,
-                      emergency_contact_phone, emergency_relationship, emergency_notes
-               FROM student_admission_extra WHERE student_id=?""",
-            (s_id,), fetchone=True)
-
-        base_keys = [
-            "student_id", "name", "father_name", "dob", "phone", "address",
-            "class_sec", "photo_path", "prev_education", "total_fee", "paid_fee", "status"
-        ]
-        base = dict(zip(base_keys, row))
-
-        extra_keys = [
-            "gender", "blood_group", "nationality", "religion", "mother_name",
-            "guardian_name", "guardian_cnic", "occupation", "alt_phone", "email",
-            "current_address", "city", "area", "admission_date", "academic_year",
-            "admission_type", "emergency_contact_name", "emergency_contact_phone",
-            "emergency_relationship", "emergency_notes"
-        ]
-        extra_data = dict(zip(extra_keys, extra)) if extra else {k: "" for k in extra_keys}
-
-        can_fee = rbac.can(self.user_role, "student.fee.edit")
-        previous_paid = float(base.get("paid_fee") or 0)
-
-        win = tk.Toplevel(self.root)
-        win.title(f"Edit Complete Student Profile — {s_id}")
-        win.geometry("900x760")
-        win.minsize(760, 620)
-        win.config(bg=theme.SILVER)
-        win.transient(self.root)
-        win.grab_set()
-
-        header = tk.Frame(win, bg=theme.NAVY, padx=18, pady=12)
-        header.pack(fill=tk.X)
-        tk.Label(
-            header, text=f"✏️ EDIT STUDENT — {s_id}",
-            font=theme.FONT_H1, bg=theme.NAVY, fg="white"
-        ).pack(side=tk.LEFT)
-        tk.Label(
-            header, text="Complete Student Information",
-            font=theme.FONT_SMALL, bg=theme.NAVY, fg=theme.BRAND_BLUE_LIGHT
-        ).pack(side=tk.RIGHT)
-
-        outer = tk.Frame(win, bg=theme.SILVER)
-        outer.pack(fill=tk.BOTH, expand=True, padx=12, pady=12)
-
-        canvas = tk.Canvas(outer, bg=theme.WHITE, highlightthickness=0)
-        scrollbar = ttk.Scrollbar(outer, orient=tk.VERTICAL, command=canvas.yview)
-        form = tk.Frame(canvas, bg=theme.WHITE, padx=18, pady=14)
-
-        form.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.create_window((0, 0), window=form, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
-
-        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-
-        fields = {}
-
-        def add_section(title):
-            tk.Label(
-                form, text=title, font=theme.FONT_H2,
-                bg=theme.WHITE, fg=theme.NAVY
-            ).pack(fill=tk.X, anchor="w", pady=(8, 5))
-
-        def add_field(key, label, value="", state="normal"):
-            row_frame = tk.Frame(form, bg=theme.WHITE)
-            row_frame.pack(fill=tk.X, pady=4)
-            tk.Label(
-                row_frame, text=label, width=24, anchor="w",
-                font=theme.FONT_SMALL, bg=theme.WHITE, fg=theme.TEXT_MUTED
-            ).pack(side=tk.LEFT)
-            ent = tk.Entry(row_frame, font=theme.FONT_BODY)
-            ent.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=3)
-            ent.insert(0, "" if value is None else str(value))
-            if state != "normal":
-                ent.config(state=state)
-            fields[key] = ent
-            return ent
-
-        add_section("Basic Student Information")
-        add_field("student_id", "Student ID", base["student_id"], "disabled")
-        add_field("name", "Full Name *", base["name"])
-        add_field("father_name", "Father's Name", base["father_name"])
-        add_field("dob", "Date of Birth (YYYY-MM-DD)", base["dob"])
-        add_field("phone", "Phone", base["phone"])
-        add_field("address", "Permanent Address", base["address"])
-        add_field("class_sec", "Class / Section *", base["class_sec"])
-        add_field("prev_education", "Previous Education", base["prev_education"])
-
-        photo_row = tk.Frame(form, bg=theme.WHITE)
-        photo_row.pack(fill=tk.X, pady=4)
-        tk.Label(
-            photo_row, text="Photo", width=24, anchor="w",
-            font=theme.FONT_SMALL, bg=theme.WHITE, fg=theme.TEXT_MUTED
-        ).pack(side=tk.LEFT)
-        photo_var = tk.StringVar(value=base.get("photo_path") or "")
-        photo_entry = tk.Entry(photo_row, textvariable=photo_var, font=theme.FONT_BODY)
-        photo_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=3)
-
-        def choose_photo():
-            path = filedialog.askopenfilename(
-                filetypes=[("Image Files", "*.jpg *.png *.jpeg")]
-            )
-            if path:
-                photo_var.set(path)
-
-        tk.Button(
-            photo_row, text="Browse", command=choose_photo,
-            bg=theme.SLATE, fg="white", bd=0, padx=10, cursor="hand2"
-        ).pack(side=tk.LEFT, padx=(8, 0))
-
-        add_section("Fee Information")
-        add_field("total_fee", "Total Fee", base["total_fee"], "normal" if can_fee else "disabled")
-        add_field("paid_fee", "Paid Fee", base["paid_fee"], "normal" if can_fee else "disabled")
-
-        add_section("Admission / Personal Information")
-        for key, label in [
-            ("gender", "Gender"),
-            ("blood_group", "Blood Group"),
-            ("nationality", "Nationality"),
-            ("religion", "Religion"),
-            ("mother_name", "Mother's Name"),
-            ("guardian_name", "Guardian Name"),
-            ("guardian_cnic", "Guardian CNIC"),
-            ("occupation", "Guardian Occupation"),
-            ("alt_phone", "Alternate Phone"),
-            ("email", "Email"),
-            ("current_address", "Current Address"),
-            ("city", "City"),
-            ("area", "Area"),
-            ("admission_date", "Admission Date"),
-            ("academic_year", "Academic Year"),
-            ("admission_type", "Admission Type"),
-            ("emergency_contact_name", "Emergency Contact Name"),
-            ("emergency_contact_phone", "Emergency Contact Phone"),
-            ("emergency_relationship", "Emergency Relationship"),
-            ("emergency_notes", "Emergency Notes"),
-        ]:
-            add_field(key, label, extra_data.get(key, ""))
-
-        add_field("status", "Student Status", base.get("status") or "Active")
-
-        def do_save():
-            name = fields["name"].get().strip()
-            cls = fields["class_sec"].get().strip()
-
-            if not name or not cls:
-                messagebox.showerror(
-                    "Required Fields",
-                    "Student Name and Class / Section are required.",
-                    parent=win
-                )
-                return
-
-            if can_fee:
-                total_f, ok1 = safe_float(
-                    fields["total_fee"].get(), "Total Fee", default=0.0
-                )
-                paid_f, ok2 = safe_float(
-                    fields["paid_fee"].get(), "Paid Fee", default=0.0
-                )
-                if not (ok1 and ok2):
-                    return
-                if paid_f > total_f:
-                    if not messagebox.askyesno(
-                        "Overpayment Warning",
-                        f"Paid Fee (Rs. {paid_f:.2f}) is more than Total Fee "
-                        f"(Rs. {total_f:.2f}). Continue?",
-                        parent=win
-                    ):
-                        return
-            else:
-                total_f = base.get("total_fee") or 0.0
-                paid_f = base.get("paid_fee") or 0.0
-
-            # Update the main students table.
-            db.run(
-                """UPDATE students SET
-                   name=?, father_name=?, dob=?, phone=?, address=?, class_sec=?,
-                   photo_path=?, prev_education=?, total_fee=?, paid_fee=?, status=?
-                   WHERE student_id=?""",
-                (
-                    name,
-                    fields["father_name"].get().strip(),
-                    fields["dob"].get().strip(),
-                    fields["phone"].get().strip(),
-                    fields["address"].get().strip(),
-                    cls,
-                    photo_var.get().strip(),
-                    fields["prev_education"].get().strip(),
-                    total_f,
-                    paid_f,
-                    fields["status"].get().strip() or "Active",
-                    s_id
-                ),
-                commit=True
-            )
-
-            # Update the complete admission-extra record. If it does not exist,
-            # create it so older students can also gain all profile fields.
-            extra_values = tuple(
-                fields[key].get().strip() for key in extra_keys
-            )
-            extra_exists = db.run(
-                "SELECT 1 FROM student_admission_extra WHERE student_id=?",
-                (s_id,), fetchone=True
-            )
-
-            if extra_exists:
-                db.run(
-                    """UPDATE student_admission_extra SET
-                       gender=?, blood_group=?, nationality=?, religion=?, mother_name=?,
-                       guardian_name=?, guardian_cnic=?, occupation=?, alt_phone=?, email=?,
-                       current_address=?, city=?, area=?, admission_date=?, academic_year=?,
-                       admission_type=?, emergency_contact_name=?, emergency_contact_phone=?,
-                       emergency_relationship=?, emergency_notes=?
-                       WHERE student_id=?""",
-                    extra_values + (s_id,),
-                    commit=True
-                )
-            else:
-                db.run(
-                    """INSERT INTO student_admission_extra (
-                       student_id, gender, blood_group, nationality, religion, mother_name,
-                       guardian_name, guardian_cnic, occupation, alt_phone, email,
-                       current_address, city, area, admission_date, academic_year,
-                       admission_type, emergency_contact_name, emergency_contact_phone,
-                       emergency_relationship, emergency_notes
-                       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (s_id,) + extra_values,
-                    commit=True
-                )
-
-            # Record only a newly increased paid amount; do not double-count old payments.
-            delta = paid_f - previous_paid
-            if delta > 0 and can_fee:
-                accounting.record_fee_revenue(
-                    self.user_role, s_id, delta, self.current_user
-                )
-
-            log_activity(
-                self.current_user,
-                f"Updated complete student profile for {s_id}"
-            )
-
-            self.load_student_table()
-            messagebox.showinfo(
-                "Updated",
-                f"Complete student information for {s_id} has been updated successfully.",
-                parent=win
-            )
-
-            if delta > 0 and can_fee:
-                self._offer_fee_receipt(
-                    s_id, name, fields["father_name"].get().strip(), cls,
-                    total_f, previous_paid, delta
-                )
-
-            win.destroy()
-
-        button_row = tk.Frame(win, bg=theme.SILVER, padx=12, pady=10)
-        button_row.pack(fill=tk.X)
-        theme.primary_button(
-            button_row, "💾 Save All Changes", do_save, bg=theme.SUCCESS
-        ).pack(side=tk.LEFT)
-        tk.Button(
-            button_row, text="Cancel", command=win.destroy,
-            bg=theme.WHITE, fg=theme.TEXT_MUTED, bd=0,
-            font=theme.FONT_SMALL, cursor="hand2"
-        ).pack(side=tk.LEFT, padx=12)
-
-        canvas.bind_all(
-            "<MouseWheel>",
-            lambda e: canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
-        )
-
-        def close_window():
-            try:
-                canvas.unbind_all("<MouseWheel>")
-            except Exception:
-                pass
-            win.destroy()
-
-        win.protocol("WM_DELETE_WINDOW", close_window)
-
+        if getattr(self, "_student_dir", None):
+            self._student_dir._edit_selected()
 
     def clear_admission_form(self):
         self.lbl_auto_id.config(text=generate_next_student_id())
@@ -2299,8 +1557,29 @@ class StudentManagementApp:
 
     # ------------------------------------------
     # TAB 5: CLASS TIMETABLE
+    # Prefers timetable_window.py when available; otherwise keeps the
+    # original inline UI so the app never crashes if the module is missing.
     # ------------------------------------------
     def build_timetable_tab(self):
+        for child in self.tab_timetable.winfo_children():
+            child.destroy()
+
+        if HAS_TIMETABLE_MODULE and build_timetable_into is not None:
+            try:
+                self._timetable_workspace = build_timetable_into(
+                    self.tab_timetable,
+                    self.user_role,
+                    self.current_user,
+                    log_activity=log_activity,
+                )
+                return
+            except Exception as exc:
+                print(f"[Timetable] Professional module failed, using legacy UI: {exc}")
+                for child in self.tab_timetable.winfo_children():
+                    child.destroy()
+
+        # ----- Legacy inline Timetable (safe fallback) -----
+        self._timetable_workspace = None
         can_manage = rbac.can(self.user_role, "timetable.manage")
         top = tk.LabelFrame(self.tab_timetable, text="Add Period Schedule", font=("Segoe UI", 10, "bold"), padx=10, pady=10)
         top.pack(fill=tk.X, padx=10, pady=10)
@@ -2343,8 +1622,14 @@ class StudentManagementApp:
         self.load_timetable_table()
 
     def remove_timetable_entry(self):
+        ws = getattr(self, "_timetable_workspace", None)
+        if ws is not None:
+            ws.remove_selected()
+            return
         if not rbac.can(self.user_role, "timetable.manage"):
             messagebox.showerror("Permission Denied", "Not allowed to manage timetable.")
+            return
+        if not hasattr(self, "tree_tt"):
             return
         sel = self.tree_tt.selection()
         if not sel:
@@ -2358,8 +1643,14 @@ class StudentManagementApp:
             self.load_timetable_table()
 
     def save_timetable(self):
+        ws = getattr(self, "_timetable_workspace", None)
+        if ws is not None:
+            ws.save_period()
+            return
         if not rbac.can(self.user_role, "timetable.manage"):
             messagebox.showerror("Permission Denied", "Not allowed to manage timetable.")
+            return
+        if not hasattr(self, "ent_tt_cls"):
             return
         cls = self.ent_tt_cls.get().strip()
         day = self.combo_tt_day.get()
@@ -2400,6 +1691,12 @@ class StudentManagementApp:
         messagebox.showinfo("Success", "Timetable Schedule Saved!")
 
     def load_timetable_table(self):
+        ws = getattr(self, "_timetable_workspace", None)
+        if ws is not None:
+            ws.load_table()
+            return
+        if not hasattr(self, "tree_tt"):
+            return
         self.tree_tt.delete(*self.tree_tt.get_children())
         rows = db.run("SELECT * FROM timetable", fetchall=True)
         for r in rows:
@@ -2409,104 +1706,43 @@ class StudentManagementApp:
     # TAB 6: ACCOUNTING (NEW)
     # ------------------------------------------
     def build_accounting_tab(self):
-        dash = tk.LabelFrame(self.tab_accounting, text="Financial Dashboard", font=("Segoe UI", 10, "bold"), padx=10, pady=10)
-        dash.pack(fill=tk.X, padx=10, pady=10)
+        """Finance page — owned by finance_window.py (professional workspace)."""
+        for child in self.tab_accounting.winfo_children():
+            child.destroy()
+        self._finance_workspace = build_finance_into(
+            self.tab_accounting,
+            self.user_role,
+            self.current_user,
+            log_activity=log_activity,
+        )
 
-        self.lbl_dash = tk.Label(dash, text="", font=("Segoe UI", 11, "bold"), justify="left")
-        self.lbl_dash.pack(side=tk.LEFT, padx=10)
+    def open_finance_window(self):
+        """Optional: open Finance as a dedicated popup window."""
+        return launch_finance_window(
+            self.root, self.user_role, self.current_user, log_activity=log_activity,
+        )
 
-        btns = tk.Frame(dash)
-        btns.pack(side=tk.RIGHT)
-        tk.Button(btns, text="🔄 Refresh", command=self.refresh_accounting_dashboard, bg="#0284c7", fg="white", font=("Segoe UI", 9, "bold")).pack(side=tk.LEFT, padx=5)
-        if HAS_MATPLOTLIB:
-            tk.Button(btns, text="📊 Revenue vs Expense Chart", command=self.show_finance_chart, bg="#7c3aed", fg="white", font=("Segoe UI", 9, "bold")).pack(side=tk.LEFT, padx=5)
-
-        entry_frame = tk.LabelFrame(self.tab_accounting, text="Record Revenue / Expense", font=("Segoe UI", 10, "bold"), padx=10, pady=10)
-        entry_frame.pack(fill=tk.X, padx=10, pady=5)
-
-        tk.Label(entry_frame, text="Type:").grid(row=0, column=0, padx=5)
-        self.combo_acc_type = ttk.Combobox(entry_frame, values=["Revenue", "Expense"], width=10, state="readonly")
-        self.combo_acc_type.current(0)
-        self.combo_acc_type.grid(row=0, column=1, padx=5)
-
-        tk.Label(entry_frame, text="Category:").grid(row=0, column=2, padx=5)
-        self.ent_acc_category = tk.Entry(entry_frame, width=15)
-        self.ent_acc_category.insert(0, "Other")
-        self.ent_acc_category.grid(row=0, column=3, padx=5)
-
-        tk.Label(entry_frame, text="Amount (Rs):").grid(row=0, column=4, padx=5)
-        self.ent_acc_amount = tk.Entry(entry_frame, width=10)
-        self.ent_acc_amount.grid(row=0, column=5, padx=5)
-
-        tk.Label(entry_frame, text="Description:").grid(row=0, column=6, padx=5)
-        self.ent_acc_desc = tk.Entry(entry_frame, width=20)
-        self.ent_acc_desc.grid(row=0, column=7, padx=5)
-
-        tk.Button(entry_frame, text="Save Entry", command=self.save_accounting_entry, bg="#16a34a", fg="white", font=("Segoe UI", 9, "bold")).grid(row=0, column=8, padx=10)
-
-        self.tree_accounting = ttk.Treeview(self.tab_accounting, columns=("id", "type", "category", "amount", "date", "desc"), show="headings")
-        for col, h in [("id", "ID"), ("type", "Type"), ("category", "Category/Source"), ("amount", "Amount"), ("date", "Date"), ("desc", "Description")]:
-            self.tree_accounting.heading(col, text=h)
-            self.tree_accounting.column(col, anchor="center")
-        self.tree_accounting.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-
-        self.refresh_accounting_dashboard()
-        self.load_accounting_table()
-
+    # Legacy thin wrappers (kept so any external callers do not break).
     def refresh_accounting_dashboard(self):
-        totals = accounting.dashboard_totals(self.user_role)
-        self.lbl_dash.config(text=(
-            f"Total Revenue: Rs. {totals['total_revenue']:.2f}     "
-            f"Total Expenses: Rs. {totals['total_expense']:.2f}     "
-            f"Net Income: Rs. {totals['net_income']:.2f}\n"
-            f"Today — Revenue: Rs. {totals['today_revenue']:.2f}  Expenses: Rs. {totals['today_expense']:.2f}     "
-            f"This Month — Revenue: Rs. {totals['month_revenue']:.2f}  Expenses: Rs. {totals['month_expense']:.2f}"
-        ))
-
-    def save_accounting_entry(self):
-        kind = self.combo_acc_type.get()
-        category = self.ent_acc_category.get().strip() or "Other"
-        try:
-            amount = float(self.ent_acc_amount.get().strip())
-        except ValueError:
-            messagebox.showerror("Error", "Enter a valid amount.")
-            return
-        desc = self.ent_acc_desc.get().strip()
-
-        if kind == "Revenue":
-            accounting.add_revenue(self.user_role, category, amount, desc, "", "Cash", self.current_user)
-        else:
-            accounting.add_expense(self.user_role, category, amount, desc, "", "Cash", "", self.current_user)
-
-        log_activity(self.current_user, f"Recorded {kind} entry: {category} Rs.{amount}")
-        self.ent_acc_amount.delete(0, tk.END)
-        self.ent_acc_desc.delete(0, tk.END)
-        self.refresh_accounting_dashboard()
-        self.load_accounting_table()
+        ws = getattr(self, "_finance_workspace", None)
+        if ws is not None:
+            ws.refresh_all()
 
     def load_accounting_table(self):
-        self.tree_accounting.delete(*self.tree_accounting.get_children())
-        for r in accounting.list_revenue(self.user_role):
-            r_id, source, student_id, amount, date, desc, method = r
-            self.tree_accounting.insert("", tk.END, values=(r_id, "Revenue", source, f"{amount:.2f}", date, desc or ""))
-        for r in accounting.list_expense(self.user_role):
-            e_id, category, amount, date, desc, vendor, method = r
-            self.tree_accounting.insert("", tk.END, values=(e_id, "Expense", category, f"{amount:.2f}", date, desc or ""))
+        ws = getattr(self, "_finance_workspace", None)
+        if ws is not None:
+            ws.load_table()
+
+    def save_accounting_entry(self):
+        ws = getattr(self, "_finance_workspace", None)
+        if ws is not None:
+            ws.save_entry()
 
     def show_finance_chart(self):
-        totals = accounting.dashboard_totals(self.user_role)
-        plt.figure(figsize=(5, 4))
-        plt.bar(["Revenue", "Expenses", "Net Income"],
-                [totals["total_revenue"], totals["total_expense"], totals["net_income"]],
-                color=["#16a34a", "#dc2626", "#0284c7"])
-        plt.ylabel("Rs.")
-        plt.title("Revenue vs Expenses vs Net Income")
-        plt.tight_layout()
-        plt.show()
+        ws = getattr(self, "_finance_workspace", None)
+        if ws is not None:
+            ws.show_chart()
 
-    # ------------------------------------------
-    # TAB 7: SETTINGS — System Settings & Automation
-    # ------------------------------------------
     def build_settings_tab(self):
         """Render Settings into self.tab_settings via the dedicated module.
 

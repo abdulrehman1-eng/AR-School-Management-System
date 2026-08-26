@@ -13,7 +13,7 @@ import os
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 from datetime import datetime
-from typing import Any, Optional
+from typing import Optional
 
 import db
 import rbac

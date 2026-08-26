@@ -12,12 +12,9 @@ import io
 import os
 from datetime import datetime
 
-from reportlab.lib.pagesizes import letter, A4
-from reportlab.lib.units import mm, inch
+from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 from reportlab.lib import colors
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
 
 try:
     import qrcode
