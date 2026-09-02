@@ -483,19 +483,33 @@ class _StudentDirectoryController:
                 bal = total_f - paid_f
 
             cm = current_month_info.get(s_id)
-            month_status_code = cm["status"] if cm else "NO_CYCLE"
-            month_bal = float(cm["balance"]) if cm else 0.0
-            month_status_label = _status_display(month_status_code)
+            if cm:
+                month_status_code = cm["status"]
+                month_bal = float(cm["balance"])
+                month_status_label = _status_display(month_status_code)
 
-            # Show real pending amount for current month when not fully paid
-            if month_status_code == "PAID":
-                display_month = "Paid"
-            elif month_status_code == "NO_CYCLE":
-                display_month = "No Cycle"
-            elif month_bal > 0:
-                display_month = f"{month_status_label} ({month_bal:,.0f})"
+                # Show real pending amount for current month when not fully paid
+                if month_status_code == "PAID":
+                    display_month = "Paid"
+                elif month_bal > 0:
+                    display_month = f"{month_status_label} ({month_bal:,.0f})"
+                else:
+                    display_month = month_status_label
             else:
-                display_month = month_status_label
+                # No fee_cycle row for the current month (e.g. cycles haven't
+                # been generated yet) — instead of showing "No Cycle", fall
+                # back to the student's default total_fee / paid_fee and
+                # compute a dynamic PENDING/PAID status so the column always
+                # reflects a real, actionable fee state.
+                default_balance = max(0.0, total_f - paid_f)
+                if default_balance > 0:
+                    month_status_code = "PENDING"
+                    month_bal = default_balance
+                    display_month = f"PENDING (Rs. {month_bal:,.0f})"
+                else:
+                    month_status_code = "PAID"
+                    month_bal = 0.0
+                    display_month = "PAID"
 
             if fee_filter == "This Month Paid" and month_status_code != "PAID":
                 continue
@@ -824,12 +838,43 @@ class _StudentDirectoryController:
         photo_var = tk.StringVar(value=base.get("photo_path") or "")
         tk.Entry(photo_row, textvariable=photo_var, font=theme.FONT_BODY).pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=3)
 
+        photo_preview_box = tk.Frame(form, bg="#cbd5e1", width=90, height=100,
+                                     highlightbackground=theme.SILVER_BORDER, highlightthickness=1)
+        photo_preview_box.pack(anchor="w", padx=(160, 0), pady=(0, 6))
+        photo_preview_box.pack_propagate(False)
+        lbl_photo_preview = tk.Label(photo_preview_box, text="No\nPhoto", bg="#cbd5e1",
+                                     fg=theme.TEXT_MUTED, font=theme.FONT_SMALL)
+        lbl_photo_preview.pack(expand=True)
+
+        def _refresh_photo_preview(path=None):
+            try:
+                from student_photos_util import apply_photo_to_label
+                apply_photo_to_label(
+                    lbl_photo_preview,
+                    path if path is not None else photo_var.get(),
+                    size=(90, 100),
+                    student_id=s_id,
+                    placeholder_text="No\nPhoto",
+                )
+            except Exception:
+                try:
+                    lbl_photo_preview.configure(image="", text="No\nPhoto")
+                    lbl_photo_preview.image = None
+                except Exception:
+                    pass
+
         def choose_photo():
-            path = filedialog.askopenfilename(filetypes=[("Image Files", "*.jpg *.png *.jpeg")])
+            path = filedialog.askopenfilename(
+                filetypes=[("Image Files", "*.jpg *.png *.jpeg *.gif *.bmp")],
+                parent=win,
+            )
             if path:
                 photo_var.set(path)
+                _refresh_photo_preview(path)
 
-        tk.Button(photo_row, text="Browse", command=choose_photo, bg=theme.SLATE, fg="white", bd=0, padx=10, cursor="hand2").pack(side=tk.LEFT, padx=(8, 0))
+        tk.Button(photo_row, text="Browse", command=choose_photo, bg=theme.SLATE, fg="white",
+                  bd=0, padx=10, cursor="hand2").pack(side=tk.LEFT, padx=(8, 0))
+        _refresh_photo_preview()
 
         add_section("Fee Information")
         add_field("total_fee", "Total Fee", base["total_fee"], "normal" if can_fee else "disabled")
@@ -876,6 +921,22 @@ class _StudentDirectoryController:
                 total_f = base.get("total_fee") or 0.0
                 paid_f = base.get("paid_fee") or 0.0
 
+            # Persist photo under student_photos/{student_id}.ext when a new
+            # local file is chosen; keep existing DB path otherwise.
+            raw_photo = photo_var.get().strip()
+            stored_photo = raw_photo
+            if raw_photo and os.path.isfile(raw_photo):
+                try:
+                    from student_photos_util import save_student_photo, photos_dir
+                    # Only re-copy when source is outside our photos folder
+                    # (user picked a new file via Browse).
+                    if not os.path.abspath(raw_photo).startswith(os.path.abspath(photos_dir())):
+                        saved = save_student_photo(raw_photo, s_id)
+                        if saved:
+                            stored_photo = saved
+                except Exception:
+                    stored_photo = raw_photo
+
             db.run(
                 """UPDATE students SET
                    name=?, father_name=?, dob=?, phone=?, address=?, class_sec=?,
@@ -884,7 +945,7 @@ class _StudentDirectoryController:
                 (
                     name, fields["father_name"].get().strip(), fields["dob"].get().strip(),
                     fields["phone"].get().strip(), fields["address"].get().strip(), cls,
-                    photo_var.get().strip(), fields["prev_education"].get().strip(),
+                    stored_photo, fields["prev_education"].get().strip(),
                     total_f, paid_f, fields["status"].get().strip() or "Active", s_id,
                 ),
                 commit=True,

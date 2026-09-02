@@ -16,6 +16,7 @@ import fee_automation
 from student_admission import launch_admission_window
 from student_profile import launch_student_profile_window
 from student_directory import build_student_directory_into
+from dashboard import build_dashboard_into
 from results_window import build_results_into, launch_results_window
 from smart_attendance import launch_attendance_window
 try:
@@ -285,39 +286,78 @@ class StudentManagementApp:
         if can_logs:
             add_page("logs", self.tab_logs)
 
-        # ---------------- Sidebar navigation ----------------
-        nav_items = [("dashboard", "Dashboard", "🏠", True)]
-        nav_items.append(("students", "Students", "🎓", True))
-        nav_items.append(("results", "Results & Academics", "📊", can_results))
-        nav_items.append(("teachers", "Teachers & Payroll", "👨‍🏫", can_teachers))
-        nav_items.append(("timetable", "Timetable", "🕐", True))
-        nav_items.append(("accounting", "Finance", "💰", can_accounting))
-        nav_items.append(("settings", "Settings", "⚙️", can_settings))
-        nav_items.append(("logs", "Audit Logs", "📜", can_logs))
+        # ---------------- Sidebar navigation (scrollable, compact labels) ----
+        # Short labels so text never clips outside the 220px sidebar on
+        # smaller Windows 11 / laptop screens. Long titles were overflowing.
+        nav_items = [
+            ("dashboard", "Dashboard", "🏠", True),
+            ("students", "Students", "🎓", True),
+            ("attendance", "Attendance", "🗓️", True),  # special: popup, not show_page
+            ("results", "Results", "📊", can_results),
+            ("teachers", "Teachers", "👨‍🏫", can_teachers),
+            ("timetable", "Timetable", "🕐", True),
+            ("accounting", "Finance", "💰", can_accounting),
+            ("settings", "Settings", "⚙️", can_settings),
+            ("logs", "Audit Logs", "📜", can_logs),
+        ]
 
-        ai_btn = theme.sidebar_button(self.sidebar, "AI Admin Assistant", "🤖", command=self.open_ai_assistant)
-        ai_btn.pack(fill=tk.X, side=tk.BOTTOM, pady=(0, 10))
+        # Fixed AI button at bottom — always visible
+        ai_btn = theme.sidebar_button(
+            self.sidebar, "AI Assistant", "🤖", command=self.open_ai_assistant,
+        )
+        ai_btn.pack(fill=tk.X, side=tk.BOTTOM, pady=(4, 10), padx=4)
 
-        nav_frame = tk.Frame(self.sidebar, bg=theme.NAVY)
-        nav_frame.pack(fill=tk.BOTH, expand=True, pady=(10, 0))
+        # Scrollable nav area so buttons never go off-screen
+        nav_outer = tk.Frame(self.sidebar, bg=theme.NAVY)
+        nav_outer.pack(fill=tk.BOTH, expand=True, pady=(8, 0))
 
-        # One user-facing Attendance entry only. The legacy app.py Attendance
-        # page is kept internally, but users are routed to the unified
-        # smart_attendance.py screen so the feature never appears twice.
-        attendance_btn = theme.sidebar_button(nav_frame, "Attendance", "🗓️", command=self.open_attendance)
-        attendance_btn.pack(fill=tk.X)
+        nav_canvas = tk.Canvas(nav_outer, bg=theme.NAVY, highlightthickness=0, width=200)
+        nav_scroll = ttk.Scrollbar(nav_outer, orient=tk.VERTICAL, command=nav_canvas.yview)
+        nav_frame = tk.Frame(nav_canvas, bg=theme.NAVY)
+        nav_frame.bind(
+            "<Configure>",
+            lambda e: nav_canvas.configure(scrollregion=nav_canvas.bbox("all")),
+        )
+        _nav_win = nav_canvas.create_window((0, 0), window=nav_frame, anchor="nw")
+        nav_canvas.configure(yscrollcommand=nav_scroll.set)
+
+        def _nav_canvas_cfg(event):
+            nav_canvas.itemconfig(_nav_win, width=event.width)
+
+        nav_canvas.bind("<Configure>", _nav_canvas_cfg)
+        nav_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        # Scrollbar only if needed — still pack so wheel works; thin visual
+        nav_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+
+        def _nav_wheel(event):
+            if event.num == 4 or getattr(event, "delta", 0) > 0:
+                nav_canvas.yview_scroll(-1, "units")
+            elif event.num == 5 or getattr(event, "delta", 0) < 0:
+                nav_canvas.yview_scroll(1, "units")
+
+        nav_canvas.bind("<Enter>", lambda e: nav_canvas.bind_all("<MouseWheel>", _nav_wheel))
+        nav_canvas.bind("<Leave>", lambda e: nav_canvas.unbind_all("<MouseWheel>"))
+        nav_canvas.bind("<Enter>", lambda e: nav_canvas.bind_all("<Button-4>", _nav_wheel), add="+")
+        nav_canvas.bind("<Leave>", lambda e: nav_canvas.unbind_all("<Button-4>"), add="+")
+        nav_canvas.bind("<Enter>", lambda e: nav_canvas.bind_all("<Button-5>", _nav_wheel), add="+")
+        nav_canvas.bind("<Leave>", lambda e: nav_canvas.unbind_all("<Button-5>"), add="+")
+
         for key, label, icon, allowed in nav_items:
             if not allowed:
                 continue
-            if key == "teachers":
+            if key == "attendance":
                 btn = theme.sidebar_button(
-                    nav_frame, label, icon, command=self.open_teacher_payroll
+                    nav_frame, label, icon, command=self.open_attendance,
+                )
+            elif key == "teachers":
+                btn = theme.sidebar_button(
+                    nav_frame, label, icon, command=self.open_teacher_payroll,
                 )
             else:
                 btn = theme.sidebar_button(
-                    nav_frame, label, icon, command=lambda k=key: self.show_page(k)
+                    nav_frame, label, icon, command=lambda k=key: self.show_page(k),
                 )
-            btn.pack(fill=tk.X)
+            btn.pack(fill=tk.X, padx=4, pady=1)
             self.nav_buttons[key] = btn
 
         # Build every allowed page's content exactly as before — the
@@ -690,145 +730,20 @@ class StudentManagementApp:
     # DASHBOARD
     # ------------------------------------------
     def build_dashboard_tab(self):
-        self.dash_scroll_canvas = tk.Canvas(self.tab_dashboard, bg=theme.SILVER, highlightthickness=0)
-        vscroll = ttk.Scrollbar(self.tab_dashboard, orient=tk.VERTICAL, command=self.dash_scroll_canvas.yview)
-        self.dash_body = tk.Frame(self.dash_scroll_canvas, bg=theme.SILVER)
-        self.dash_body.bind("<Configure>", lambda e: self.dash_scroll_canvas.configure(scrollregion=self.dash_scroll_canvas.bbox("all")))
-        self.dash_scroll_canvas.create_window((0, 0), window=self.dash_body, anchor="nw")
-        self.dash_scroll_canvas.configure(yscrollcommand=vscroll.set)
-        self.dash_scroll_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        vscroll.pack(side=tk.RIGHT, fill=tk.Y)
-        self.refresh_dashboard()
+        """Dashboard UI lives in dashboard.py (professional separate module)."""
+        for child in self.tab_dashboard.winfo_children():
+            child.destroy()
+        self._dashboard = build_dashboard_into(self.tab_dashboard, self)
 
     def refresh_dashboard(self):
-        for w in self.dash_body.winfo_children():
-            w.destroy()
+        """Re-render live stats / quick actions / recent lists."""
+        dash = getattr(self, "_dashboard", None)
+        if dash is not None:
+            try:
+                dash.refresh()
+            except Exception as exc:
+                print(f"[Dashboard] refresh error (non-fatal): {exc}")
 
-        tk.Label(self.dash_body, text=f"Welcome back, {self.current_user}", font=theme.FONT_H1,
-                 bg=theme.SILVER, fg=theme.TEXT_DARK).pack(anchor="w", pady=(0, 2))
-        tk.Label(self.dash_body, text=datetime.now().strftime("%A, %d %B %Y"), font=theme.FONT_SMALL,
-                 bg=theme.SILVER, fg=theme.TEXT_MUTED).pack(anchor="w", pady=(0, 14))
-
-        # ----- real stats from the database -----
-        total_students = db.run("SELECT COUNT(*) FROM students WHERE COALESCE(status,'Active')='Active'", fetchone=True)[0]
-        archived_students = db.run("SELECT COUNT(*) FROM students WHERE status='Archived'", fetchone=True)[0]
-        total_teachers = db.run("SELECT COUNT(*) FROM teachers", fetchone=True)[0]
-        today = datetime.now().strftime("%Y-%m-%d")
-        # Present Today = physically present (Present + Late). Leave stays
-        # separate from Absent — shown only as a subtitle accent.
-        late_today = db.run(
-            "SELECT COUNT(*) FROM attendance WHERE date=? AND status='Late'",
-            (today,), fetchone=True,
-        )[0]
-        present_only = db.run(
-            "SELECT COUNT(*) FROM attendance WHERE date=? AND status='Present'",
-            (today,), fetchone=True,
-        )[0]
-        present_today = present_only + late_today
-        absent_today = db.run(
-            "SELECT COUNT(*) FROM attendance WHERE date=? AND status='Absent'",
-            (today,), fetchone=True,
-        )[0]
-        leave_today = db.run(
-            "SELECT COUNT(*) FROM attendance WHERE date=? AND status='Leave'",
-            (today,), fetchone=True,
-        )[0]
-        pending_fees = db.run("SELECT COALESCE(SUM(total_fee-paid_fee),0) FROM students WHERE COALESCE(status,'Active')='Active' AND total_fee > paid_fee", fetchone=True)[0]
-
-        cards_row = tk.Frame(self.dash_body, bg=theme.SILVER)
-        cards_row.pack(fill=tk.X, pady=(0, 12))
-        theme.stat_card(cards_row, "Active Students", total_students, theme.BRAND_BLUE,
-                         subtitle=f"{archived_students} archived").pack(side=tk.LEFT, padx=(0, 12), fill=tk.BOTH, expand=True)
-        theme.stat_card(cards_row, "Teachers", total_teachers, theme.SLATE).pack(side=tk.LEFT, padx=12, fill=tk.BOTH, expand=True)
-        present_subtitle = f"{late_today} late" if late_today else None
-        theme.stat_card(
-            cards_row, "Present Today", present_today, theme.SUCCESS,
-            subtitle=present_subtitle,
-        ).pack(side=tk.LEFT, padx=12, fill=tk.BOTH, expand=True)
-        absent_subtitle = f"{leave_today} on leave" if leave_today else None
-        theme.stat_card(
-            cards_row, "Absent Today", absent_today, theme.DANGER,
-            subtitle=absent_subtitle,
-        ).pack(side=tk.LEFT, padx=(12, 0), fill=tk.BOTH, expand=True)
-
-        if rbac.can(self.user_role, "student.fee.view"):
-            cards_row2 = tk.Frame(self.dash_body, bg=theme.SILVER)
-            cards_row2.pack(fill=tk.X, pady=(0, 12))
-            theme.stat_card(cards_row2, "Pending Fees (Rs.)", f"{pending_fees:,.0f}", theme.WARNING).pack(side=tk.LEFT, padx=(0, 12), fill=tk.BOTH, expand=True)
-            if rbac.can(self.user_role, "accounting.dashboard"):
-                totals = accounting.dashboard_totals(self.user_role)
-                theme.stat_card(cards_row2, "This Month Revenue (Rs.)", f"{totals['month_revenue']:,.0f}", theme.SUCCESS).pack(side=tk.LEFT, padx=12, fill=tk.BOTH, expand=True)
-                theme.stat_card(cards_row2, "This Month Expenses (Rs.)", f"{totals['month_expense']:,.0f}", theme.DANGER).pack(side=tk.LEFT, padx=12, fill=tk.BOTH, expand=True)
-                month_net = totals.get("month_net_income",
-                                       float(totals["month_revenue"] or 0) - float(totals["month_expense"] or 0))
-                theme.stat_card(cards_row2, "This Month Net Income (Rs.)", f"{month_net:,.0f}",
-                                 theme.SUCCESS if month_net >= 0 else theme.DANGER).pack(side=tk.LEFT, padx=(12, 0), fill=tk.BOTH, expand=True)
-
-        # ----- quick actions -----
-        actions_card, actions_body = theme.section_card(self.dash_body, "Quick Actions")
-        actions_card.pack(fill=tk.X, pady=(0, 12))
-        qa = [("➕ Add Student", "__admission__", rbac.can(self.user_role, "student.add")),
-              ("🗓️ Attendance", "__attendance__", True),
-              ("💰 Fee Management", "__fee_management__", rbac.can(self.user_role, "student.fee.view")),
-              ("📁 Export Remaining Fees", "__whatsapp_fee_reminders__", rbac.can(self.user_role, "fee.reports.view")),
-              ("👨‍🏫 Add Teacher", "teachers", self.can_teachers and rbac.can(self.user_role, "teacher.add")),
-              ("📝 Enter Marks", "results", self.can_results and rbac.can(self.user_role, "results.marks.edit")),
-              ("💰 View Finance", "accounting", rbac.can(self.user_role, "accounting.dashboard"))]
-        for label, target, allowed in qa:
-            if not allowed:
-                continue
-            if target == "__fee_management__":
-                command = self.open_fee_management
-            elif target == "__attendance__":
-                command = self.open_attendance
-            elif target == "__admission__":
-                command = self.open_admission
-            elif target == "__whatsapp_fee_reminders__":
-                command = self.open_whatsapp_fee_reminders
-            else:
-                command = lambda t=target: self.show_page(t)
-            theme.primary_button(actions_body, label, command).pack(side=tk.LEFT, padx=(0, 10), pady=6)
-
-        # ----- recent activity, side by side -----
-        lists_row = tk.Frame(self.dash_body, bg=theme.SILVER)
-        lists_row.pack(fill=tk.BOTH, expand=True)
-
-        admissions_card, admissions_body = theme.section_card(lists_row, "Recent Admissions")
-        admissions_card.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 12))
-        recent_students = db.run(
-            "SELECT student_id, name, class_sec FROM students WHERE COALESCE(status,'Active')='Active' ORDER BY ROWID DESC LIMIT 5",
-            fetchall=True)
-        if recent_students:
-            for s_id, name, cls in recent_students:
-                row = tk.Frame(admissions_body, bg=theme.WHITE)
-                row.pack(fill=tk.X, pady=2)
-                tk.Label(row, text=f"{name}", font=theme.FONT_BODY, bg=theme.WHITE, fg=theme.TEXT_DARK).pack(side=tk.LEFT)
-                tk.Label(row, text=f"{s_id} · {cls}", font=theme.FONT_SMALL, bg=theme.WHITE, fg=theme.TEXT_MUTED).pack(side=tk.RIGHT)
-        else:
-            tk.Label(admissions_body, text="No students admitted yet.", font=theme.FONT_SMALL, bg=theme.WHITE, fg=theme.TEXT_MUTED).pack(anchor="w", pady=8)
-
-        payments_card, payments_body = theme.section_card(lists_row, "Recent Payments")
-        payments_card.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(12, 0))
-        if rbac.can(self.user_role, "accounting.revenue.view"):
-            recent_payments = db.run(
-                "SELECT student_id, amount, date FROM accounting_revenue ORDER BY id DESC LIMIT 5", fetchall=True)
-            if recent_payments:
-                for s_id, amount, date in recent_payments:
-                    row = tk.Frame(payments_body, bg=theme.WHITE)
-                    row.pack(fill=tk.X, pady=2)
-                    tk.Label(row, text=f"{s_id or 'General'}", font=theme.FONT_BODY, bg=theme.WHITE, fg=theme.TEXT_DARK).pack(side=tk.LEFT)
-                    tk.Label(row, text=f"Rs. {amount:,.0f} · {date}", font=theme.FONT_SMALL, bg=theme.WHITE, fg=theme.TEXT_MUTED).pack(side=tk.RIGHT)
-            else:
-                tk.Label(payments_body, text="No payments recorded yet.", font=theme.FONT_SMALL, bg=theme.WHITE, fg=theme.TEXT_MUTED).pack(anchor="w", pady=8)
-        else:
-            tk.Label(payments_body, text="You don't have permission to view finance records.", font=theme.FONT_SMALL, bg=theme.WHITE, fg=theme.TEXT_MUTED).pack(anchor="w", pady=8)
-
-        if HAS_MATPLOTLIB and rbac.can(self.user_role, "accounting.dashboard"):
-            theme.primary_button(self.dash_body, "📊 View Revenue vs Expense Chart", self.show_finance_chart, bg=theme.SLATE).pack(anchor="w", pady=(12, 0))
-
-    # ------------------------------------------
-    # TAB 1: ADMISSION
-    # ------------------------------------------
     def build_admission_tab(self):
         """Students page — directory owned by student_directory.py."""
         for child in self.tab_admission.winfo_children():

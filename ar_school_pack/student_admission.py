@@ -342,9 +342,23 @@ class AdmissionWindow:
         self.lbl_auto_id.config(text=f"Student ID (auto): {self._gen_id()}")
 
     def browse_photo(self):
-        path = filedialog.askopenfilename(filetypes=[("Image Files", "*.jpg *.jpeg *.png")], parent=self.win)
-        if path:
-            self.photo_path_var.set(path)
+        path = filedialog.askopenfilename(
+            filetypes=[("Image Files", "*.jpg *.jpeg *.png *.gif *.bmp")],
+            parent=self.win,
+        )
+        if not path:
+            return
+        self.photo_path_var.set(path)
+        try:
+            from student_photos_util import apply_photo_to_label
+            ok = apply_photo_to_label(
+                self.lbl_photo, path, size=(90, 100), placeholder_text="Photo\nSelected",
+            )
+            if not ok:
+                self.lbl_photo.config(text="Photo\nSelected", bg=theme.SUCCESS, fg="white")
+            else:
+                self.lbl_photo.config(bg="#cbd5e1")
+        except Exception:
             self.lbl_photo.config(text="Photo\nSelected", bg=theme.SUCCESS, fg="white")
 
     def clear_form(self):
@@ -362,7 +376,11 @@ class AdmissionWindow:
         if "admission_fee_paid" in self.vars:
             self.vars["admission_fee_paid"].insert(0, "0")
         self.photo_path_var.set("")
-        self.lbl_photo.config(text="No\nPhoto", bg="#cbd5e1", fg="black")
+        try:
+            self.lbl_photo.configure(image="", text="No\nPhoto", bg="#cbd5e1", fg="black")
+            self.lbl_photo.image = None
+        except Exception:
+            self.lbl_photo.config(text="No\nPhoto", bg="#cbd5e1", fg="black")
         self._refresh_auto_id()
         for w in self.result_frame.winfo_children():
             w.destroy()
@@ -498,6 +516,16 @@ class AdmissionWindow:
                 # re-generate rather than silently overwriting someone.
                 s_id = self._gen_id()
 
+            # Persist photo under student_photos/{student_id}.ext when provided.
+            stored_photo = ""
+            raw_photo = (self.photo_path_var.get() or "").strip()
+            if raw_photo and os.path.isfile(raw_photo):
+                try:
+                    from student_photos_util import save_student_photo
+                    stored_photo = save_student_photo(raw_photo, s_id) or raw_photo
+                except Exception:
+                    stored_photo = raw_photo
+
             # Insert with paid_fee=0; the initial payment (if any) is applied
             # through fee_cycles.record_payment below so the monthly ledger,
             # students.paid_fee cache, and accounting_revenue stay in sync.
@@ -506,7 +534,7 @@ class AdmissionWindow:
                        prev_education, total_fee, paid_fee, status)
                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Active')""",
                    (s_id, name, self.vars["father_name"].get().strip(), dob, phone,
-                    self.vars["address"].get().strip(), cls, self.photo_path_var.get(),
+                    self.vars["address"].get().strip(), cls, stored_photo,
                     self.vars["previous_school"].get().strip(), total_fee, 0.0), commit=True)
             self._just_created_id = s_id
 

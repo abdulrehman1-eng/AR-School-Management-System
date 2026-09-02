@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 from typing import Any, Iterable, List, Optional, Sequence, Tuple
@@ -368,6 +367,89 @@ def compute_result(
 
 
 # ---------------------------------------------------------------------------
+# Combined (multi-exam) result calculation
+# ---------------------------------------------------------------------------
+
+def compute_combined_result(
+    student_id: str,
+    exam_types: Sequence[str],
+) -> Optional[Result]:
+    """Combine marks from several exam types (e.g. Quiz + Midterm) into one
+    consolidated result, using the exact same grading rules as
+    ``compute_result()``.
+
+    Each subject row is kept distinct per exam type — a student's Math marks
+    in the Quiz and Math marks in the Midterm are two separate rows — so the
+    consolidated report reflects exactly what was recorded. The subject
+    label is annotated with its originating exam type (e.g. "Math (Quiz)")
+    to keep this clear on screen and on the printed report.
+
+    Returns ``None`` if none of the given exam types have any marks
+    recorded for this student.
+    """
+    student_id = str(student_id).strip()
+    if not student_id:
+        raise ValueError("Student ID cannot be empty.")
+
+    cleaned_exam_types = [str(e).strip() for e in exam_types if str(e).strip()]
+    if not cleaned_exam_types:
+        raise ValueError("At least one exam type is required.")
+
+    criteria = get_passing_criteria()
+    subject_results: list[SubjectResult] = []
+    total_obtained = 0.0
+    total_marks = 0.0
+
+    for exam_type in cleaned_exam_types:
+        for subject_name, obtained, total in _fetch_marks(student_id, exam_type):
+            obtained_value = _to_float(obtained)
+            total_value = _to_float(total)
+
+            if total_value < 0 or obtained_value < 0:
+                # Same invalid-data guard as compute_result(); skip rather
+                # than crash a combined report over one bad row.
+                continue
+            if total_value > 0 and obtained_value > total_value:
+                continue
+
+            subject_percent = (
+                obtained_value / total_value * 100 if total_value > 0 else 0.0
+            )
+            subject_pass = subject_percent >= criteria["min_subject_percent"]
+
+            subject_results.append(
+                {
+                    "subject": f"{subject_name} ({exam_type})",
+                    "obtained": obtained_value,
+                    "total": total_value,
+                    "percent": subject_percent,
+                    "pass": subject_pass,
+                }
+            )
+            total_obtained += obtained_value
+            total_marks += total_value
+
+    if not subject_results:
+        return None
+
+    percentage = total_obtained / total_marks * 100 if total_marks > 0 else 0.0
+    grade = grade_for_percent(percentage)
+    passed = percentage >= criteria["min_overall_percent"]
+    if criteria["require_pass_each_subject"]:
+        passed = passed and all(sub["pass"] for sub in subject_results)
+
+    return {
+        "student_id": student_id,
+        "subjects": subject_results,
+        "total_obtained": total_obtained,
+        "total_marks": total_marks,
+        "percentage": percentage,
+        "grade": grade,
+        "passed": passed,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Exam types
 # ---------------------------------------------------------------------------
 
@@ -400,5 +482,6 @@ __all__ = [
     "set_grading_bands",
     "grade_for_percent",
     "compute_result",
+    "compute_combined_result",
     "exam_types_for_student",
 ]

@@ -1,11 +1,13 @@
+import os
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, filedialog
 from datetime import datetime
 
 import db
 import rbac
 import reports
 import theme
+import results_engine
 
 MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July",
                "August", "September", "October", "November", "December"]
@@ -85,23 +87,45 @@ class StudentProfileWindow:
             w.destroy()
 
         self.notebook.add(self.tab_overview, text="Overview")
-        self._build_overview_tab()
+        self._safe_build_tab(self._build_overview_tab, self.tab_overview)
 
         if rbac.can(self.user_role, "attendance.view"):
             self.notebook.add(self.tab_attendance, text="Attendance")
-            self._build_attendance_tab()
+            self._safe_build_tab(self._build_attendance_tab, self.tab_attendance)
 
         if rbac.can(self.user_role, "results.view"):
             self.notebook.add(self.tab_results, text="Results")
-            self._build_results_tab()
+            self._safe_build_tab(self._build_results_tab, self.tab_results)
 
         if rbac.can(self.user_role, "student.fee.view"):
             self.notebook.add(self.tab_fees, text="Fees")
-            self._build_fees_tab()
+            self._safe_build_tab(self._build_fees_tab, self.tab_fees)
 
         if rbac.can(self.user_role, "student.edit"):
             self.notebook.add(self.tab_personal, text="Personal")
-            self._build_personal_tab()
+            self._safe_build_tab(self._build_personal_tab, self.tab_personal)
+
+    @staticmethod
+    def _safe_build_tab(builder, tab_frame):
+        """Run a tab's build function in isolation. If it raises, show an
+        inline error inside that one tab instead of letting the exception
+        bubble up — otherwise every tab queued *after* the failing one
+        (e.g. Fees, Personal) would silently never get added to the
+        notebook, which is exactly how a bug in one tab used to make
+        unrelated tabs 'disappear'.
+        """
+        try:
+            builder()
+        except Exception as exc:
+            for w in tab_frame.winfo_children():
+                w.destroy()
+            tk.Label(
+                tab_frame,
+                text=f"⚠ This tab could not be loaded.\n{exc}",
+                font=theme.FONT_BODY, bg=theme.WHITE, fg=theme.DANGER,
+                justify="left", anchor="w", wraplength=700,
+            ).pack(fill=tk.X, padx=16, pady=16)
+            print(f"[student_profile] Tab build error ({builder.__name__}): {exc}")
 
     # ------------------------------------------------------------------
     def search_student(self):
@@ -169,6 +193,32 @@ class StudentProfileWindow:
             tk.Label(f, text="No student loaded.", bg=theme.WHITE).pack()
             return
 
+        # Left panel: student photo (120x140) — never crashes on missing path
+        left = tk.Frame(f, bg=theme.WHITE)
+        left.pack(side=tk.LEFT, anchor="n", padx=(0, 18))
+        photo_box = tk.Frame(left, bg="#cbd5e1", width=120, height=140,
+                             highlightbackground=theme.SILVER_BORDER, highlightthickness=1)
+        photo_box.pack()
+        photo_box.pack_propagate(False)
+        lbl_photo = tk.Label(photo_box, text="No\nPhoto", bg="#cbd5e1", fg=theme.TEXT_MUTED,
+                             font=theme.FONT_SMALL)
+        lbl_photo.pack(expand=True)
+        try:
+            from student_photos_util import apply_photo_to_label
+            apply_photo_to_label(
+                lbl_photo,
+                s.get("photo_path"),
+                size=(120, 140),
+                student_id=s.get("student_id"),
+                placeholder_text="No\nPhoto",
+            )
+        except Exception:
+            pass
+
+        # Right panel: overview fields
+        right = tk.Frame(f, bg=theme.WHITE)
+        right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
         adm_status = "—"
         try:
             adm = reports.get_admission_fee_status(s["student_id"])
@@ -198,10 +248,10 @@ class StudentProfileWindow:
                 ("Current Month Fee", monthly_line)]
 
         for i, (label, val) in enumerate(rows):
-            tk.Label(f, text=f"{label}:", font=theme.FONT_BODY_BOLD, bg=theme.WHITE,
+            tk.Label(right, text=f"{label}:", font=theme.FONT_BODY_BOLD, bg=theme.WHITE,
                      fg=theme.TEXT_MUTED).grid(row=i, column=0, sticky="w", pady=4)
-            tk.Label(f, text=str(val), font=theme.FONT_BODY, bg=theme.WHITE).grid(row=i, column=1, sticky="w",
-                                                                                    padx=12, pady=4)
+            tk.Label(right, text=str(val), font=theme.FONT_BODY, bg=theme.WHITE).grid(
+                row=i, column=1, sticky="w", padx=12, pady=4)
 
     # ------------------------------------------------------------------
     # Fees Tab
@@ -583,7 +633,184 @@ class StudentProfileWindow:
         f.pack(fill=tk.BOTH, expand=True)
         if not s:
             return
-        tk.Label(f, text="Examination results are loaded here.", font=theme.FONT_BODY, bg=theme.WHITE).pack(anchor="w")
+
+        tk.Label(
+            f, text="📊 Examination Results", font=theme.FONT_H2, bg=theme.WHITE, fg=theme.TEXT_DARK,
+        ).pack(anchor="w", pady=(0, 10))
+
+        exam_types = results_engine.exam_types_for_student(s["student_id"])
+        if not exam_types:
+            tk.Label(
+                f, text="No exam results recorded for this student yet.",
+                font=theme.FONT_BODY, bg=theme.WHITE, fg=theme.TEXT_MUTED,
+            ).pack(anchor="w")
+            return
+
+        split = tk.PanedWindow(
+            f, orient=tk.HORIZONTAL, bg=theme.WHITE, sashwidth=6, sashrelief="flat",
+        )
+        split.pack(fill=tk.BOTH, expand=True)
+
+        # ----------------------------------------------------------------
+        # LEFT: Single Exam View — dynamic per-exam-type marks/PASS-FAIL
+        # ----------------------------------------------------------------
+        left = tk.Frame(split, bg=theme.WHITE, padx=6)
+        split.add(left, minsize=340)
+
+        tk.Label(
+            left, text="Single Exam View", font=theme.FONT_BODY_BOLD, bg=theme.WHITE, fg=theme.TEXT_DARK,
+        ).pack(anchor="w", pady=(0, 6))
+
+        exam_row = tk.Frame(left, bg=theme.WHITE)
+        exam_row.pack(fill=tk.X, pady=(0, 6))
+        tk.Label(
+            exam_row, text="Exam:", font=theme.FONT_SMALL, bg=theme.WHITE, fg=theme.TEXT_MUTED,
+        ).pack(side=tk.LEFT)
+        cmb_exam = ttk.Combobox(
+            exam_row, values=exam_types, state="readonly", width=18, font=theme.FONT_SMALL,
+        )
+        cmb_exam.pack(side=tk.LEFT, padx=6)
+        cmb_exam.set(exam_types[0])
+
+        lbl_summary = tk.Label(
+            left, text="", font=theme.FONT_BODY_BOLD, bg=theme.WHITE, fg=theme.TEXT_DARK,
+            justify="left", anchor="w", wraplength=320,
+        )
+        lbl_summary.pack(fill=tk.X, pady=(2, 6))
+
+        cols = ("subject", "obtained", "total", "percent", "result")
+        tree = ttk.Treeview(left, columns=cols, show="headings", height=12)
+        headers = {
+            "subject": "Subject", "obtained": "Obtained", "total": "Total",
+            "percent": "Percent", "result": "Result",
+        }
+        widths = {"subject": 140, "obtained": 70, "total": 60, "percent": 70, "result": 70}
+        for c in cols:
+            tree.heading(c, text=headers[c])
+            tree.column(c, width=widths[c], anchor="center")
+        tree.tag_configure("PASS", foreground=theme.SUCCESS)
+        tree.tag_configure("FAIL", foreground=theme.DANGER)
+        tree.pack(fill=tk.BOTH, expand=True)
+
+        def refresh_single(_ev=None):
+            tree.delete(*tree.get_children())
+            exam = cmb_exam.get()
+            result = results_engine.compute_result(s["student_id"], exam)
+            if not result:
+                lbl_summary.config(text=f"No marks recorded for {exam}.", fg=theme.TEXT_MUTED)
+                return
+            for sub in result["subjects"]:
+                tag = "PASS" if sub["pass"] else "FAIL"
+                tree.insert(
+                    "", tk.END, tags=(tag,),
+                    values=(
+                        sub["subject"], f"{sub['obtained']:.1f}", f"{sub['total']:.1f}",
+                        f"{sub['percent']:.1f}%", tag,
+                    ),
+                )
+            lbl_summary.config(
+                text=(
+                    f"{exam}:  {result['total_obtained']:.1f} / {result['total_marks']:.0f}  "
+                    f"({result['percentage']:.1f}%)  ·  Grade {result['grade']}  ·  "
+                    f"{'PASS' if result['passed'] else 'FAIL'}"
+                ),
+                fg=theme.SUCCESS if result["passed"] else theme.DANGER,
+            )
+
+        cmb_exam.bind("<<ComboboxSelected>>", refresh_single)
+        refresh_single()
+
+        # ----------------------------------------------------------------
+        # RIGHT: Multi-Test Selection — combine tests into one PDF report
+        # ----------------------------------------------------------------
+        right = tk.Frame(split, bg=theme.WHITE, padx=6)
+        split.add(right, minsize=260)
+
+        tk.Label(
+            right, text="Multi-Test Selection", font=theme.FONT_BODY_BOLD, bg=theme.WHITE, fg=theme.TEXT_DARK,
+        ).pack(anchor="w", pady=(0, 6))
+        tk.Label(
+            right,
+            text="Select two or more tests (e.g. Quiz + Midterm)\nto combine into one consolidated report.",
+            font=theme.FONT_SMALL, bg=theme.WHITE, fg=theme.TEXT_MUTED, justify="left",
+        ).pack(anchor="w", pady=(0, 6))
+
+        lst = tk.Listbox(
+            right, selectmode=tk.EXTENDED, font=theme.FONT_BODY, height=10,
+            bg="#f8fafc", relief="solid", bd=1, selectbackground=theme.BRAND_BLUE,
+            exportselection=False,
+        )
+        for et in exam_types:
+            lst.insert(tk.END, et)
+        lst.pack(fill=tk.BOTH, expand=True, pady=(0, 8))
+
+        def on_generate():
+            selected = [lst.get(i) for i in lst.curselection()]
+            self._generate_combined_results_report(selected)
+
+        theme.primary_button(
+            right, "📑 Generate Combined Report", on_generate, bg="#7c3aed",
+        ).pack(fill=tk.X)
+
+    def _generate_combined_results_report(self, exam_types):
+        """Multi-test 'Generate Combined Report' action — consolidates the
+        selected exam types into one result via results_engine and renders
+        it to a PDF using the same marksheet layout as the rest of the app.
+        """
+        s = self.student
+        if not s:
+            return
+        if not exam_types:
+            messagebox.showerror(
+                "Select Tests", "Select one or more tests from the list first.", parent=self.win,
+            )
+            return
+
+        combined = results_engine.compute_combined_result(s["student_id"], exam_types)
+        if not combined:
+            messagebox.showinfo(
+                "No Data", "No marks found for the selected test(s).", parent=self.win,
+            )
+            return
+
+        exam_label = " + ".join(exam_types)
+        safe_label = exam_label.replace(" ", "").replace("+", "-")
+        default_name = f"Combined_Report_{s['student_id']}_{safe_label}.pdf"
+        path = filedialog.asksaveasfilename(
+            title="Save Combined Report",
+            defaultextension=".pdf",
+            initialfile=default_name,
+            filetypes=[("PDF Files", "*.pdf")],
+            parent=self.win,
+        )
+        if not path:
+            return
+
+        try:
+            reports.generate_marksheet(
+                s["student_id"], s["name"], s.get("class_sec") or "",
+                combined, path, exam_label=f"Combined ({exam_label})",
+            )
+        except Exception as exc:
+            messagebox.showerror(
+                "Report Error", f"Could not generate combined report:\n{exc}", parent=self.win,
+            )
+            return
+
+        try:
+            db.run(
+                "INSERT INTO audit_logs (username, action, timestamp) VALUES (?, ?, ?)",
+                (
+                    self.current_user,
+                    f"Generated combined results report for {s['student_id']} ({exam_label})",
+                    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                ),
+                commit=True,
+            )
+        except Exception:
+            pass
+
+        messagebox.showinfo("Report Ready", f"Combined report saved:\n{path}", parent=self.win)
 
     def _build_personal_tab(self):
         s = self.student

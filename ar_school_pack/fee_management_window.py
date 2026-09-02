@@ -134,12 +134,21 @@ class FeeManagementWindow:
                                            bg=theme.WHITE, fg=theme.DANGER)
         self.lbl_search_status.pack(side=tk.LEFT, padx=10)
 
-        # ---- Student info ----
+        # ---- Student info (photo + fields) ----
         info_card, self.info_body = theme.section_card(body, "Student Information")
         info_card.pack(fill=tk.X, pady=(0, 10))
         self.info_labels = {}
-        grid = tk.Frame(self.info_body, bg=theme.WHITE)
-        grid.pack(fill=tk.X)
+        info_row = tk.Frame(self.info_body, bg=theme.WHITE)
+        info_row.pack(fill=tk.X)
+        photo_box = tk.Frame(info_row, bg="#cbd5e1", width=72, height=86,
+                             highlightbackground=theme.SILVER_BORDER, highlightthickness=1)
+        photo_box.pack(side=tk.LEFT, padx=(0, 12), pady=2)
+        photo_box.pack_propagate(False)
+        self.lbl_fee_photo = tk.Label(photo_box, text="No\nPhoto", bg="#cbd5e1",
+                                      fg=theme.TEXT_MUTED, font=theme.FONT_SMALL)
+        self.lbl_fee_photo.pack(expand=True)
+        grid = tk.Frame(info_row, bg=theme.WHITE)
+        grid.pack(side=tk.LEFT, fill=tk.X, expand=True)
         for i, (label, key) in enumerate([("Name", "name"), ("Student ID", "student_id"),
                                            ("Class/Section", "class_sec"), ("Status", "status")]):
             tk.Label(grid, text=f"{label}:", font=theme.FONT_SMALL, bg=theme.WHITE,
@@ -241,7 +250,8 @@ class FeeManagementWindow:
             return
 
         row = db.run(
-            "SELECT student_id, name, class_sec, status, phone FROM students WHERE student_id=?",
+            "SELECT student_id, name, class_sec, status, phone, photo_path "
+            "FROM students WHERE student_id=?",
             (sid,), fetchone=True,
         )
         if not row:
@@ -251,17 +261,33 @@ class FeeManagementWindow:
             self.lbl_search_status.config(text=f"⚠ No student found with ID '{sid}'.")
             return
 
-        s_id, name, cls, status, phone = row
-        self.student = {"student_id": s_id, "name": name, "class_sec": cls or "-",
-                         "status": status or "Active", "phone": phone or ""}
+        s_id, name, cls, status, phone, photo_path = row
+        self.student = {
+            "student_id": s_id, "name": name, "class_sec": cls or "-",
+            "status": status or "Active", "phone": phone or "",
+            "photo_path": photo_path or "",
+        }
         self.info_labels["name"].config(text=name)
         self.info_labels["student_id"].config(text=s_id)
         self.info_labels["class_sec"].config(text=cls or "-")
         self.info_labels["status"].config(text=status or "Active")
 
+        # Student photo in fee profile panel
+        try:
+            from student_photos_util import apply_photo_to_label
+            apply_photo_to_label(
+                self.lbl_fee_photo, photo_path, size=(72, 86),
+                student_id=s_id, placeholder_text="No\nPhoto",
+            )
+        except Exception:
+            try:
+                self.lbl_fee_photo.configure(image="", text="No\nPhoto")
+                self.lbl_fee_photo.image = None
+            except Exception:
+                pass
+
         if (status or "Active") != "Active":
             self.lbl_search_status.config(text=f"⚠ Student '{name}' is Archived — read-only.")
-
 
         self.receipt_card.pack_forget()
         self._load_history()
@@ -270,6 +296,11 @@ class FeeManagementWindow:
     def _clear_info(self):
         for lbl in self.info_labels.values():
             lbl.config(text="—")
+        try:
+            self.lbl_fee_photo.configure(image="", text="No\nPhoto")
+            self.lbl_fee_photo.image = None
+        except Exception:
+            pass
         self.tree_cycles.delete(*self.tree_cycles.get_children())
 
     def _load_history(self, preserve_selected_id=None):
@@ -988,11 +1019,12 @@ class FeeManagementWindow:
 
         dlg = tk.Toplevel(self.win)
         dlg.title("Bulk Assign Additional Fees")
-        dlg.geometry("520x520")
-        dlg.minsize(480, 460)
+        dlg.geometry("560x640")
+        dlg.minsize(520, 600)
         dlg.config(bg=theme.WHITE)
         dlg.transient(self.win)
         dlg.grab_set()
+        dlg.resizable(True, True)
 
         tk.Label(
             dlg,
@@ -1050,7 +1082,7 @@ class FeeManagementWindow:
             dlg, text="Assign To", font=theme.FONT_BODY_BOLD,
             bg=theme.WHITE, fg=theme.TEXT_DARK, padx=10, pady=8,
         )
-        scope_frame.pack(fill=tk.BOTH, expand=True, padx=14, pady=(10, 6))
+        scope_frame.pack(fill=tk.BOTH, expand=True, padx=14, pady=(10, 4))
 
         scope_var = tk.StringVar(value="classes")
 
@@ -1058,23 +1090,23 @@ class FeeManagementWindow:
             scope_frame, text="All Active Students (whole school)",
             variable=scope_var, value="all", bg=theme.WHITE, font=theme.FONT_BODY,
             anchor="w",
-        ).pack(fill=tk.X, pady=(0, 4))
+        ).pack(fill=tk.X, pady=(0, 2))
 
         tk.Radiobutton(
             scope_frame, text="Selected Class(es) only",
             variable=scope_var, value="classes", bg=theme.WHITE, font=theme.FONT_BODY,
             anchor="w",
-        ).pack(fill=tk.X, pady=(0, 4))
+        ).pack(fill=tk.X, pady=(0, 2))
 
         list_frame = tk.Frame(scope_frame, bg=theme.WHITE)
-        list_frame.pack(fill=tk.BOTH, expand=True, pady=(2, 4))
+        list_frame.pack(fill=tk.BOTH, expand=True, pady=(2, 2))
         tk.Label(
             list_frame,
             text="Hold Ctrl / Shift to select multiple classes:",
             font=theme.FONT_SMALL, bg=theme.WHITE, fg=theme.TEXT_MUTED,
         ).pack(anchor="w")
         lb_classes = tk.Listbox(
-            list_frame, selectmode=tk.EXTENDED, height=7,
+            list_frame, selectmode=tk.EXTENDED, height=6,
             font=theme.FONT_BODY, exportselection=False,
         )
         lb_scroll = ttk.Scrollbar(list_frame, orient="vertical", command=lb_classes.yview)
@@ -1091,7 +1123,7 @@ class FeeManagementWindow:
             scope_frame, text="", font=theme.FONT_SMALL,
             bg=theme.WHITE, fg=theme.INFO, anchor="w",
         )
-        lbl_preview.pack(fill=tk.X, pady=(4, 0))
+        lbl_preview.pack(fill=tk.X, pady=(2, 0))
 
         def update_preview(*_args):
             try:
@@ -1114,13 +1146,17 @@ class FeeManagementWindow:
         lb_classes.bind("<<ListboxSelect>>", update_preview)
         update_preview()
 
+        # ---- Bottom fixed area (always visible) ----
+        bottom = tk.Frame(dlg, bg=theme.WHITE)
+        bottom.pack(fill=tk.X, side=tk.BOTTOM, padx=14, pady=(6, 12))
+
         skip_var = tk.BooleanVar(value=True)
         tk.Checkbutton(
-            dlg,
+            bottom,
             text="Skip students who already have this fee type + academic year",
             variable=skip_var, bg=theme.WHITE, font=theme.FONT_SMALL,
             anchor="w",
-        ).pack(fill=tk.X, padx=14, pady=(4, 2))
+        ).pack(fill=tk.X, pady=(0, 8))
 
         def do_bulk():
             t = type_map.get(cmb_type.get())
@@ -1197,8 +1233,8 @@ class FeeManagementWindow:
             self._notify_change()
 
         theme.primary_button(
-            dlg, "💾 Assign Now", do_bulk, bg=theme.SUCCESS,
-        ).pack(pady=(8, 14))
+            bottom, "💾 Assign Now", do_bulk, bg=theme.SUCCESS,
+        ).pack(fill=tk.X, ipady=6)
 
 
 def launch_fee_management_window(parent, user_role, current_user, on_change=None):

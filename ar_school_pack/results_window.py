@@ -262,17 +262,22 @@ class ResultsWorkspace:
 
         self.tab_entry = tk.Frame(self.nb, bg=theme.SILVER)
         self.tab_overview = tk.Frame(self.nb, bg=theme.SILVER)
+        self.tab_analytics = tk.Frame(self.nb, bg=theme.SILVER)
         self.tab_subjects = tk.Frame(self.nb, bg=theme.SILVER)
         self.tab_history = tk.Frame(self.nb, bg=theme.SILVER)
 
         self.nb.add(self.tab_entry, text="  Marks Entry  ")
         self.nb.add(self.tab_overview, text="  Result Overview  ")
+        if self.can_view:
+            self.nb.add(self.tab_analytics, text="  Class Analytics  ")
         if self.can_manage_subjects:
             self.nb.add(self.tab_subjects, text="  Subjects Setup  ")
         self.nb.add(self.tab_history, text="  Marks History  ")
 
         self._build_entry_tab()
         self._build_overview_tab()
+        if self.can_view:
+            self._build_analytics_tab()
         if self.can_manage_subjects:
             self._build_subjects_tab()
         self._build_history_tab()
@@ -867,6 +872,259 @@ class ResultsWorkspace:
         plt.show()
 
     # ==================================================================
+    # Class Analytics — class/subject-wide dashboard, batch multi-test
+    # selection, and a consolidated mark sheet PDF for the whole class.
+    # ==================================================================
+    def _build_analytics_tab(self):
+        f = self.tab_analytics
+        pad = tk.Frame(f, bg=theme.SILVER, padx=12, pady=10)
+        pad.pack(fill=tk.BOTH, expand=True)
+
+        self._analytics_rows: list[dict] = []
+        self._analytics_class = ""
+        self._analytics_exam_label = "All Exams"
+
+        # ---- Filters ----
+        card_f, body_f = theme.section_card(pad, "Class-Wise Filter")
+        card_f.pack(fill=tk.X, pady=(0, 8))
+
+        row = tk.Frame(body_f, bg=theme.WHITE)
+        row.pack(fill=tk.X, pady=4)
+
+        tk.Label(row, text="Class / Section:", font=theme.FONT_BODY_BOLD, bg=theme.WHITE).pack(side=tk.LEFT)
+        self.cmb_analytics_class = ttk.Combobox(row, values=[], state="readonly", width=16, font=theme.FONT_BODY)
+        self.cmb_analytics_class.pack(side=tk.LEFT, padx=(6, 16))
+
+        tk.Label(row, text="Exam filter:", font=theme.FONT_BODY_BOLD, bg=theme.WHITE).pack(side=tk.LEFT)
+        self.cmb_analytics_exam = ttk.Combobox(
+            row, values=["All Exams"] + self.EXAM_TYPES, state="readonly", width=16, font=theme.FONT_BODY,
+        )
+        self.cmb_analytics_exam.set("All Exams")
+        self.cmb_analytics_exam.pack(side=tk.LEFT, padx=(6, 16))
+
+        theme.primary_button(
+            row, "↻ Load Analytics", self.refresh_class_analytics, bg=theme.SLATE,
+        ).pack(side=tk.LEFT)
+
+        row2 = tk.Frame(body_f, bg=theme.WHITE)
+        row2.pack(fill=tk.X, pady=(10, 4))
+        tk.Label(
+            row2,
+            text="Batch test groups (select several, e.g. all Quizzes + Final — used only "
+                 "for the consolidated mark sheet button below):",
+            font=theme.FONT_SMALL, bg=theme.WHITE, fg=theme.TEXT_MUTED,
+        ).pack(anchor="w")
+        self.lst_batch_exams = tk.Listbox(
+            row2, selectmode=tk.EXTENDED, font=theme.FONT_SMALL, height=4,
+            bg="#f8fafc", relief="solid", bd=1, selectbackground=theme.BRAND_BLUE,
+            exportselection=False,
+        )
+        for et in self.EXAM_TYPES:
+            self.lst_batch_exams.insert(tk.END, et)
+        self.lst_batch_exams.pack(fill=tk.X, pady=(4, 0))
+
+        # ---- Summary cards ----
+        tk.Label(
+            pad, text="Class Summary", font=theme.FONT_BODY_BOLD, bg=theme.SILVER, fg=theme.TEXT_DARK,
+        ).pack(anchor="w", pady=(4, 4))
+        self.analytics_cards_row = tk.Frame(pad, bg=theme.SILVER)
+        self.analytics_cards_row.pack(fill=tk.X, pady=(0, 6))
+
+        tk.Label(
+            pad, text="Grade Breakdown", font=theme.FONT_BODY_BOLD, bg=theme.SILVER, fg=theme.TEXT_DARK,
+        ).pack(anchor="w", pady=(0, 4))
+        self.analytics_grade_row = tk.Frame(pad, bg=theme.SILVER)
+        self.analytics_grade_row.pack(fill=tk.X, pady=(0, 8))
+
+        # ---- Data table ----
+        card_t, body_t = theme.section_card(pad, "Class Result Sheet")
+        card_t.pack(fill=tk.BOTH, expand=True, pady=(0, 8))
+
+        cols = ("id", "name", "obtained", "total", "percent", "grade", "result")
+        style = ttk.Style()
+        style.configure("Analytics.Treeview", rowheight=26)
+        self.tree_analytics = ttk.Treeview(
+            body_t, columns=cols, show="headings", height=14, style="Analytics.Treeview",
+        )
+        headings = [
+            ("id", "Student ID", 100), ("name", "Name", 170), ("obtained", "Obtained", 90),
+            ("total", "Total", 80), ("percent", "Percentage", 100), ("grade", "Grade", 70),
+            ("result", "Result", 90),
+        ]
+        for c, h, w in headings:
+            self.tree_analytics.heading(c, text=h)
+            self.tree_analytics.column(c, width=w, anchor="center")
+        self.tree_analytics.tag_configure("PASS", foreground=theme.SUCCESS)
+        self.tree_analytics.tag_configure("FAIL", foreground=theme.DANGER)
+        self.tree_analytics.pack(fill=tk.BOTH, expand=True, side=tk.LEFT)
+        sb3 = ttk.Scrollbar(body_t, orient="vertical", command=self.tree_analytics.yview)
+        self.tree_analytics.configure(yscrollcommand=sb3.set)
+        sb3.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # ---- Actions ----
+        actions = tk.Frame(pad, bg=theme.SILVER)
+        actions.pack(fill=tk.X, pady=(4, 0))
+        theme.primary_button(
+            actions, "🧾 Generate Consolidated Mark Sheet PDF",
+            self.generate_class_marksheet, bg="#7c3aed",
+        ).pack(side=tk.LEFT, padx=(0, 8))
+
+        self._refresh_analytics_class_options()
+        self.cmb_analytics_class.bind("<<ComboboxSelected>>", lambda e: self.refresh_class_analytics())
+        self.cmb_analytics_exam.bind("<<ComboboxSelected>>", lambda e: self.refresh_class_analytics())
+
+    def _refresh_analytics_class_options(self):
+        rows = db.run(
+            "SELECT DISTINCT class_sec FROM students "
+            "WHERE class_sec IS NOT NULL AND TRIM(class_sec) <> '' ORDER BY class_sec",
+            fetchall=True,
+        ) or []
+        classes = [r[0] for r in rows if r[0]]
+        self.cmb_analytics_class.config(values=classes)
+        if classes and not self.cmb_analytics_class.get():
+            self.cmb_analytics_class.set(classes[0])
+            self.refresh_class_analytics()
+
+    def _clear_analytics_cards(self):
+        for w in self.analytics_cards_row.winfo_children():
+            w.destroy()
+        for w in self.analytics_grade_row.winfo_children():
+            w.destroy()
+
+    def refresh_class_analytics(self):
+        self.tree_analytics.delete(*self.tree_analytics.get_children())
+        self._clear_analytics_cards()
+        self._analytics_rows = []
+
+        cls = self.cmb_analytics_class.get().strip()
+        if not cls:
+            theme.stat_card(
+                self.analytics_cards_row, "Class", "Select a class", accent=theme.TEXT_MUTED,
+            ).pack(side=tk.LEFT, fill=tk.X, expand=True)
+            return
+
+        exam_sel = self.cmb_analytics_exam.get()
+        exam = None if exam_sel == "All Exams" else exam_sel
+        self._analytics_class = cls
+        self._analytics_exam_label = "All Exams" if exam is None else exam
+
+        students = db.run(
+            "SELECT student_id, name FROM students "
+            "WHERE class_sec=? AND COALESCE(status,'Active')='Active' ORDER BY name",
+            (cls,), fetchall=True,
+        ) or []
+
+        grade_counts: dict[str, int] = {}
+        pass_count = 0
+        fail_count = 0
+
+        for sid, name in students:
+            result = results_engine.compute_result(sid, exam)
+            if not result:
+                continue
+            grade_counts[result["grade"]] = grade_counts.get(result["grade"], 0) + 1
+            passed = result["passed"]
+            if passed:
+                pass_count += 1
+            else:
+                fail_count += 1
+            tag = "PASS" if passed else "FAIL"
+            self.tree_analytics.insert(
+                "", tk.END, tags=(tag,),
+                values=(
+                    sid, name, f"{result['total_obtained']:.1f}", f"{result['total_marks']:.0f}",
+                    f"{result['percentage']:.1f}%", result["grade"], tag,
+                ),
+            )
+            self._analytics_rows.append({"student_id": sid, "name": name, "result": result})
+
+        evaluated = pass_count + fail_count
+        for label, value, accent in [
+            ("Class Size", str(len(students)), theme.NAVY),
+            ("Evaluated", str(evaluated), theme.BRAND_BLUE),
+            ("Pass", str(pass_count), theme.SUCCESS),
+            ("Fail", str(fail_count), theme.DANGER),
+        ]:
+            theme.stat_card(self.analytics_cards_row, label, value, accent=accent).pack(
+                side=tk.LEFT, fill=tk.X, expand=True, padx=6,
+            )
+
+        bands = results_engine.get_grading_bands()
+        if bands:
+            for grade, _min_p, _max_p in bands:
+                count = grade_counts.get(grade, 0)
+                theme.stat_card(
+                    self.analytics_grade_row, f"Grade {grade}", str(count), accent=theme.WARNING,
+                ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=6)
+        else:
+            theme.stat_card(
+                self.analytics_grade_row, "Grades", "No grading bands configured", accent=theme.TEXT_MUTED,
+            ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=6)
+
+    def generate_class_marksheet(self):
+        if not self._analytics_rows:
+            messagebox.showinfo(
+                "No Data",
+                "Load class analytics first (pick a class with at least one evaluated student).",
+                parent=self.root,
+            )
+            return
+
+        cls = self._analytics_class or self.cmb_analytics_class.get()
+        batch_sel = [self.lst_batch_exams.get(i) for i in self.lst_batch_exams.curselection()]
+
+        if batch_sel:
+            rows_for_pdf = []
+            for entry in self._analytics_rows:
+                combined = results_engine.compute_combined_result(entry["student_id"], batch_sel)
+                if combined:
+                    rows_for_pdf.append((entry["student_id"], entry["name"], combined))
+            exam_label = "Batch: " + " + ".join(batch_sel)
+        else:
+            rows_for_pdf = [
+                (entry["student_id"], entry["name"], entry["result"]) for entry in self._analytics_rows
+            ]
+            exam_label = self._analytics_exam_label
+
+        if not rows_for_pdf:
+            messagebox.showinfo(
+                "No Data", "No marks found for the selected batch test group(s).", parent=self.root,
+            )
+            return
+
+        safe_cls = str(cls).replace(" ", "_").replace("/", "-")
+        default_name = f"Class_{safe_cls}_Consolidated_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+        path = filedialog.asksaveasfilename(
+            title="Save Consolidated Mark Sheet",
+            defaultextension=".pdf",
+            initialfile=default_name,
+            filetypes=[("PDF Files", "*.pdf")],
+            parent=self.root,
+        )
+        if not path:
+            return
+
+        try:
+            _generate_class_marksheet_pdf(cls, exam_label, rows_for_pdf, path)
+        except Exception as e:
+            messagebox.showerror(
+                "Report Error", f"Could not generate consolidated mark sheet:\n{e}", parent=self.root,
+            )
+            return
+
+        _log_activity(
+            self.current_user,
+            f"Generated consolidated class mark sheet for {cls} ({exam_label}), "
+            f"{len(rows_for_pdf)} student(s)",
+        )
+        opened = _try_open_file(path)
+        messagebox.showinfo(
+            "Mark Sheet Ready",
+            (f"Consolidated mark sheet opened:\n{path}" if opened else f"Consolidated mark sheet saved:\n{path}"),
+            parent=self.root,
+        )
+
+    # ==================================================================
     # Subjects Setup
     # ==================================================================
     def _build_subjects_tab(self):
@@ -1202,6 +1460,84 @@ def _generate_marksheet_extended(
     except Exception as e:
         print(f"[results_window] Extended marksheet annotation failed (base PDF kept): {e}")
 
+    return out_path
+
+
+def _generate_class_marksheet_pdf(class_sec, exam_label, rows, out_path):
+    """Build one consolidated PDF mark sheet listing every student's totals,
+    percentage, grade and pass/fail badge for a class.
+
+    ``rows`` is a list of (student_id, name, result) tuples, where ``result``
+    is a results_engine result dict (from compute_result() or
+    compute_combined_result()). Reuses reports.py's page header/footer so
+    the output matches the rest of the app's PDFs.
+    """
+    from reportlab.pdfgen import canvas as rl_canvas
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib import colors
+
+    NAVY = colors.HexColor("#0f172a")
+    SILVER = colors.HexColor("#f1f5f9")
+    SUCCESS = colors.HexColor("#16a34a")
+    DANGER = colors.HexColor("#dc2626")
+    WHITE = colors.white
+    BLACK = colors.black
+
+    c = rl_canvas.Canvas(out_path, pagesize=letter)
+    y = reports._draw_page_header(c, "CONSOLIDATED CLASS MARK SHEET")
+    y = reports._kv_row(c, 50, y, "Class / Section", class_sec or "-")
+    y = reports._kv_row(c, 50, y, "Examination", exam_label)
+    y = reports._kv_row(c, 50, y, "Generated", datetime.now().strftime("%Y-%m-%d %H:%M"))
+    y -= 10
+
+    def draw_table_header(y_pos):
+        c.setFillColor(NAVY)
+        c.roundRect(50, y_pos - 4, 510, 20, 4, fill=1, stroke=0)
+        c.setFillColor(WHITE)
+        c.setFont("Helvetica-Bold", 8)
+        c.drawString(56, y_pos + 1, "STUDENT ID")
+        c.drawString(140, y_pos + 1, "NAME")
+        c.drawString(320, y_pos + 1, "OBTAINED / TOTAL")
+        c.drawString(440, y_pos + 1, "PERCENT")
+        c.drawString(500, y_pos + 1, "GRADE")
+        c.drawString(540, y_pos + 1, "RESULT")
+        return y_pos - 22
+
+    y = draw_table_header(y)
+
+    for i, (sid, name, result) in enumerate(rows):
+        if y < 90:
+            c.showPage()
+            y = 750
+            y = draw_table_header(y)
+        if i % 2 == 0:
+            c.setFillColor(SILVER)
+            c.rect(50, y - 4, 510, 18, fill=1, stroke=0)
+        c.setFillColor(BLACK)
+        c.setFont("Helvetica", 8)
+        c.drawString(56, y, str(sid)[:14])
+        c.drawString(140, y, str(name)[:26])
+        c.drawString(320, y, f"{result['total_obtained']:.1f} / {result['total_marks']:.0f}")
+        c.drawString(440, y, f"{result['percentage']:.1f}%")
+        c.drawString(500, y, str(result["grade"]))
+        passed = result.get("passed", False)
+        c.setFillColor(SUCCESS if passed else DANGER)
+        c.setFont("Helvetica-Bold", 8)
+        c.drawString(540, y, "PASS" if passed else "FAIL")
+        y -= 18
+
+    y -= 14
+    if y < 60:
+        c.showPage()
+        y = 750
+    total = len(rows)
+    passed_ct = sum(1 for _, _, r in rows if r.get("passed"))
+    c.setFillColor(NAVY)
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(50, y, f"Total Students: {total}   ·   Passed: {passed_ct}   ·   Failed: {total - passed_ct}")
+
+    reports._draw_page_footer(c)
+    c.save()
     return out_path
 
 

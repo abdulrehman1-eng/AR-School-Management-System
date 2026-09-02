@@ -187,6 +187,32 @@ def _kv_row(c, x, y, label, value, label_w=110, font_size=10):
     return y - 16
 
 
+def _resolve_student_photo(photo_path=None, student_id=None):
+    """Safe path for PDF drawing — never raises; returns '' if nothing usable."""
+    try:
+        from student_photos_util import resolve_photo_path
+        return resolve_photo_path(photo_path, student_id) or ""
+    except Exception:
+        if photo_path and os.path.isfile(str(photo_path)):
+            return str(photo_path)
+        return ""
+
+
+def _draw_student_photo(c, photo_path, x, y, w, h, student_id=None):
+    """Draw student photo (or default avatar) inside a box. Returns True if drawn."""
+    path = _resolve_student_photo(photo_path, student_id)
+    if not path:
+        return False
+    try:
+        c.drawImage(
+            path, x, y, width=w, height=h,
+            preserveAspectRatio=True, anchor="c", mask="auto",
+        )
+        return True
+    except Exception:
+        return False
+
+
 # ===========================================================================
 # ID CARD — premium design, barcode at bottom for attendance scan
 # ===========================================================================
@@ -258,17 +284,10 @@ def generate_id_card(student_id, name, cls, out_path, father_name="", dob="", ph
     c.roundRect(photo_x - 1, photo_y - 1, photo_w + 2, photo_h + 2, 7, fill=1, stroke=0)
     c.setFillColor(colors.HexColor("#e2e8f0"))
     c.roundRect(photo_x, photo_y, photo_w, photo_h, 6, fill=1, stroke=0)
-    photo_drawn = False
-    if photo_path and os.path.isfile(photo_path):
-        try:
-            c.drawImage(
-                photo_path, photo_x + 2, photo_y + 2,
-                width=photo_w - 4, height=photo_h - 4,
-                preserveAspectRatio=True, anchor="c", mask="auto",
-            )
-            photo_drawn = True
-        except Exception:
-            photo_drawn = False
+    photo_drawn = _draw_student_photo(
+        c, photo_path, photo_x + 2, photo_y + 2, photo_w - 4, photo_h - 4,
+        student_id=student_id,
+    )
     if not photo_drawn:
         c.setFillColor(MUTED)
         c.setFont("Helvetica", 9)
@@ -403,25 +422,49 @@ def generate_fee_receipt(receipt_no, student_id, name, father_name, cls, total_f
     c.setFont("Helvetica", 7)
     c.drawString(box_x + 10, y, f"Date: {payment_date}")
 
-    # ---- Student block (left only — values capped so they never reach the box) ----
+    # ---- Student photo (left of details, does not disturb receipt box) ----
+    photo_path = None
+    try:
+        import db as _db
+        prow = _db.run(
+            "SELECT photo_path FROM students WHERE student_id=?",
+            (student_id,), fetchone=True,
+        )
+        if prow:
+            photo_path = prow[0]
+    except Exception:
+        photo_path = None
+    pw, ph = 52, 62
+    px, py = 50, y - 40
+    c.setFillColor(SILVER)
+    c.setStrokeColor(SILVER_BORDER)
+    c.setLineWidth(0.6)
+    c.roundRect(px - 1, py - 1, pw + 2, ph + 2, 3, fill=1, stroke=1)
+    if not _draw_student_photo(c, photo_path, px, py, pw, ph, student_id=student_id):
+        c.setFillColor(MUTED)
+        c.setFont("Helvetica", 6)
+        c.drawCentredString(px + pw / 2, py + ph / 2 - 2, "PHOTO")
+
+    # ---- Student block (shifted right of photo — values capped so they never reach the box) ----
     c.setFont("Helvetica-Bold", 10)
     c.setFillColor(NAVY)
-    c.drawString(50, y + 30, "Student Details")
+    c.drawString(50 + pw + 12, y + 30, "Student Details")
     y -= 8
+    detail_x = 50 + pw + 12
 
     # Custom kv that truncates values before they hit the receipt box
     def kv(label, value, y_pos):
         c.setFont("Helvetica", 10)
         c.setFillColor(MUTED)
-        c.drawString(50, y_pos, str(label))
+        c.drawString(detail_x, y_pos, str(label))
         c.setFillColor(BLACK)
         c.setFont("Helvetica-Bold", 10)
         val = str(value)[:36]
         # Hard stop: value must end before box_x - 12
-        max_w = box_x - 12 - (50 + 110)
+        max_w = box_x - 12 - (detail_x + 110)
         while c.stringWidth(val, "Helvetica-Bold", 10) > max_w and len(val) > 4:
             val = val[:-2] + "…"
-        c.drawString(50 + 110, y_pos, val)
+        c.drawString(detail_x + 110, y_pos, val)
         return y_pos - 16
 
     y = kv("Student ID", student_id, y)
@@ -723,9 +766,40 @@ def generate_payslip(teacher_id, name, month, basic_sal, absents, deductions, ne
 # ===========================================================================
 # MARKSHEET
 # ===========================================================================
-def generate_marksheet(student_id, name, cls, result, out_path, exam_label="All Exams"):
+def generate_marksheet(student_id, name, cls, result, out_path, exam_label="All Exams",
+                       photo_path=None):
     c = canvas.Canvas(out_path, pagesize=letter)
     y = _draw_page_header(c, "STUDENT MARKSHEET")
+
+    # Resolve photo from DB if not passed explicitly
+    if not photo_path:
+        try:
+            import db as _db
+            row = _db.run(
+                "SELECT photo_path FROM students WHERE student_id=?",
+                (student_id,), fetchone=True,
+            )
+            if row:
+                photo_path = row[0]
+        except Exception:
+            photo_path = None
+
+    # Photo on the right of the student block
+    photo_box_w, photo_box_h = 70, 84
+    photo_x = 560 - photo_box_w
+    photo_y = y - 8
+    c.setStrokeColor(SILVER_BORDER)
+    c.setLineWidth(0.6)
+    c.setFillColor(SILVER)
+    c.roundRect(photo_x - 2, photo_y - photo_box_h + 10, photo_box_w + 4, photo_box_h + 4, 4, fill=1, stroke=1)
+    drawn = _draw_student_photo(
+        c, photo_path, photo_x, photo_y - photo_box_h + 12, photo_box_w, photo_box_h,
+        student_id=student_id,
+    )
+    if not drawn:
+        c.setFillColor(MUTED)
+        c.setFont("Helvetica", 7)
+        c.drawCentredString(photo_x + photo_box_w / 2, photo_y - photo_box_h / 2 + 8, "PHOTO")
 
     y = _kv_row(c, 50, y, "Student ID", student_id)
     y = _kv_row(c, 50, y, "Name", name)
