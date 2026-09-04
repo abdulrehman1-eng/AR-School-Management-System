@@ -259,6 +259,48 @@ class _StudentDirectoryController:
         self.cmb_status_filter = None
         self.lbl_student_count = None
         self.show_archived_var = None
+        # Stat card value labels (reference-style dashboard cards)
+        self._stat_total = None
+        self._stat_active = None
+        self._stat_pending = None
+        self._stat_classes = None
+
+    def _make_stat_card(self, parent, icon_text, icon_bg, title, subtitle, value_attr):
+        """Reference-style white metric card with coloured icon badge."""
+        card = tk.Frame(
+            parent, bg=theme.WHITE,
+            highlightbackground="#e2e8f0", highlightthickness=1,
+            padx=14, pady=12,
+        )
+        card.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
+
+        inner = tk.Frame(card, bg=theme.WHITE)
+        inner.pack(fill=tk.X)
+
+        icon_box = tk.Label(
+            inner, text=icon_text, font=("Segoe UI", 14),
+            bg=icon_bg, fg="white", width=3, height=1, padx=6, pady=4,
+        )
+        icon_box.pack(side=tk.LEFT, padx=(0, 12))
+
+        text_col = tk.Frame(inner, bg=theme.WHITE)
+        text_col.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        tk.Label(
+            text_col, text=title, font=("Segoe UI", 9),
+            bg=theme.WHITE, fg="#64748b",
+        ).pack(anchor="w")
+        val_lbl = tk.Label(
+            text_col, text="—", font=("Segoe UI", 18, "bold"),
+            bg=theme.WHITE, fg="#0f172a",
+        )
+        val_lbl.pack(anchor="w")
+        tk.Label(
+            text_col, text=subtitle, font=("Segoe UI", 8),
+            bg=theme.WHITE, fg="#94a3b8",
+        ).pack(anchor="w")
+        setattr(self, value_attr, val_lbl)
+        return card
 
     def build(self):
         can_add = rbac.can(self.user_role, "student.add")
@@ -267,39 +309,92 @@ class _StudentDirectoryController:
         can_view = rbac.can(self.user_role, "student.view")
         can_fee = rbac.can(self.user_role, "student.fee.view")
 
-        header = tk.Frame(self.parent, bg=theme.NAVY, padx=16, pady=12)
-        header.pack(fill=tk.X, padx=10, pady=(10, 8))
+        # Ensure parent background matches reference light canvas
+        try:
+            self.parent.configure(bg="#f1f5f9")
+        except Exception:
+            pass
+
+        # ---- Page header (title + subtitle + Add Student) — matches reference ----
+        header = tk.Frame(self.parent, bg="#f1f5f9", padx=4, pady=4)
+        header.pack(fill=tk.X, padx=8, pady=(8, 4))
+
+        title_col = tk.Frame(header, bg="#f1f5f9")
+        title_col.pack(side=tk.LEFT, fill=tk.Y)
         tk.Label(
-            header, text="🎓 STUDENT MANAGEMENT", font=theme.FONT_H1,
-            bg=theme.NAVY, fg="white",
-        ).pack(side=tk.LEFT)
+            title_col, text="Students", font=("Segoe UI", 20, "bold"),
+            bg="#f1f5f9", fg="#0f172a",
+        ).pack(anchor="w")
+        tk.Label(
+            title_col, text="Manage students, admissions and academic records",
+            font=("Segoe UI", 9), bg="#f1f5f9", fg="#64748b",
+        ).pack(anchor="w")
+
         if can_add:
-            theme.primary_button(
-                header, "➕ New Student Admission", self._open_admission, bg=theme.SUCCESS
-            ).pack(side=tk.RIGHT)
+            add_btn = tk.Button(
+                header, text="+  Add Student", command=self._open_admission,
+                bg="#2563eb", fg="white", font=("Segoe UI", 10, "bold"),
+                bd=0, padx=16, pady=8, cursor="hand2", activebackground="#1d4ed8",
+                activeforeground="white",
+            )
+            add_btn.pack(side=tk.RIGHT, pady=4)
 
-        directory_card, body = theme.section_card(self.parent, "Student Directory")
-        directory_card.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
+        # ---- Stat cards row (Total / Active / Pending Fees / Classes) ----
+        stats_row = tk.Frame(self.parent, bg="#f1f5f9")
+        stats_row.pack(fill=tk.X, padx=8, pady=(8, 10))
 
-        # Search
-        search_bar = tk.Frame(body, bg=theme.WHITE)
-        search_bar.pack(fill=tk.X, pady=(0, 4))
-        tk.Label(search_bar, text="Search:", font=theme.FONT_SMALL, bg=theme.WHITE).pack(
-            side=tk.LEFT, padx=(0, 4)
+        self._make_stat_card(
+            stats_row, "👥", "#3b82f6", "Total Students", "All students", "_stat_total",
         )
-        self.ent_search = tk.Entry(search_bar, font=theme.FONT_BODY)
-        self.ent_search.pack(side=tk.LEFT, padx=(0, 8), ipady=3, fill=tk.X, expand=True)
-        self.ent_search.bind("<KeyRelease>", self.load_table)
+        self._make_stat_card(
+            stats_row, "🛡", "#22c55e", "Active Students", "Active this month", "_stat_active",
+        )
+        self._make_stat_card(
+            stats_row, "⚠", "#f59e0b", "Pending Fees", "Students have pending dues", "_stat_pending",
+        )
+        last = self._make_stat_card(
+            stats_row, "📋", "#a855f7", "Total Classes", "All classes", "_stat_classes",
+        )
+        last.pack_configure(padx=(0, 0))
 
-        # Filters
+        # ---- Main white content card (filters + actions + table) ----
+        main_card = tk.Frame(
+            self.parent, bg=theme.WHITE,
+            highlightbackground="#e2e8f0", highlightthickness=1,
+        )
+        main_card.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 10))
+
+        body = tk.Frame(main_card, bg=theme.WHITE, padx=14, pady=12)
+        body.pack(fill=tk.BOTH, expand=True)
+
+        # Filter / search bar — reference layout
         filter_bar = tk.Frame(body, bg=theme.WHITE)
-        filter_bar.pack(fill=tk.X, pady=(0, 8))
+        filter_bar.pack(fill=tk.X, pady=(0, 10))
 
+        search_wrap = tk.Frame(
+            filter_bar, bg=theme.WHITE,
+            highlightbackground="#e2e8f0", highlightthickness=1,
+        )
+        search_wrap.pack(side=tk.LEFT, padx=(0, 12))
+        self.ent_search = tk.Entry(
+            search_wrap, font=("Segoe UI", 10), bd=0, width=28,
+            bg=theme.WHITE, fg="#0f172a", insertbackground="#0f172a",
+        )
+        self.ent_search.pack(side=tk.LEFT, ipady=7, padx=(10, 4))
+        self.ent_search.bind("<KeyRelease>", self.load_table)
         tk.Label(
-            filter_bar, text="Fee:", font=theme.FONT_SMALL, bg=theme.WHITE, fg=theme.TEXT_MUTED
-        ).pack(side=tk.LEFT, padx=(0, 4))
+            search_wrap, text="🔍", font=("Segoe UI", 10),
+            bg=theme.WHITE, fg="#94a3b8",
+        ).pack(side=tk.LEFT, padx=(0, 8))
+
+        fee_col = tk.Frame(filter_bar, bg=theme.WHITE)
+        fee_col.pack(side=tk.LEFT, padx=(0, 10))
+        tk.Label(
+            fee_col, text="Fee Status", font=("Segoe UI", 8),
+            bg=theme.WHITE, fg="#64748b",
+        ).pack(anchor="w")
         self.cmb_fee_filter = ttk.Combobox(
-            filter_bar,
+            fee_col,
             values=[
                 "All Fees",
                 "This Month Paid",
@@ -310,75 +405,81 @@ class _StudentDirectoryController:
                 "No Total Balance",
             ],
             state="readonly",
-            width=18,
-            font=theme.FONT_SMALL,
+            width=16,
+            font=("Segoe UI", 9),
         )
         self.cmb_fee_filter.set("All Fees")
-        self.cmb_fee_filter.pack(side=tk.LEFT, padx=(0, 12))
+        self.cmb_fee_filter.pack()
         self.cmb_fee_filter.bind("<<ComboboxSelected>>", self.load_table)
 
+        class_col = tk.Frame(filter_bar, bg=theme.WHITE)
+        class_col.pack(side=tk.LEFT, padx=(0, 10))
         tk.Label(
-            filter_bar, text="Class:", font=theme.FONT_SMALL, bg=theme.WHITE, fg=theme.TEXT_MUTED
-        ).pack(side=tk.LEFT, padx=(0, 4))
+            class_col, text="Class", font=("Segoe UI", 8),
+            bg=theme.WHITE, fg="#64748b",
+        ).pack(anchor="w")
         self.cmb_class_filter = ttk.Combobox(
-            filter_bar, values=["All Classes"], state="readonly", width=14, font=theme.FONT_SMALL
+            class_col, values=["All Classes"], state="readonly",
+            width=12, font=("Segoe UI", 9),
         )
         self.cmb_class_filter.set("All Classes")
-        self.cmb_class_filter.pack(side=tk.LEFT, padx=(0, 12))
+        self.cmb_class_filter.pack()
         self.cmb_class_filter.bind("<<ComboboxSelected>>", self.load_table)
 
+        status_col = tk.Frame(filter_bar, bg=theme.WHITE)
+        status_col.pack(side=tk.LEFT, padx=(0, 10))
         tk.Label(
-            filter_bar, text="Status:", font=theme.FONT_SMALL, bg=theme.WHITE, fg=theme.TEXT_MUTED
-        ).pack(side=tk.LEFT, padx=(0, 4))
+            status_col, text="Status", font=("Segoe UI", 8),
+            bg=theme.WHITE, fg="#64748b",
+        ).pack(anchor="w")
         self.cmb_status_filter = ttk.Combobox(
-            filter_bar,
+            status_col,
             values=["Active Only", "Archived Only", "All Status"],
             state="readonly",
-            width=14,
-            font=theme.FONT_SMALL,
+            width=12,
+            font=("Segoe UI", 9),
         )
         self.cmb_status_filter.set("Active Only")
-        self.cmb_status_filter.pack(side=tk.LEFT, padx=(0, 12))
+        self.cmb_status_filter.pack()
         self.cmb_status_filter.bind("<<ComboboxSelected>>", self.load_table)
 
         self.show_archived_var = tk.BooleanVar(value=False)
 
-        theme.primary_button(
-            filter_bar, "↻ Clear Filters", self._clear_filters, bg=theme.SLATE
-        ).pack(side=tk.LEFT, padx=(4, 8))
-
-        self.lbl_student_count = tk.Label(
-            filter_bar, text="", font=theme.FONT_SMALL, bg=theme.WHITE, fg=theme.TEXT_MUTED
+        clear_btn = tk.Button(
+            filter_bar, text="↻  Clear Filters", command=self._clear_filters,
+            bg=theme.WHITE, fg="#64748b", font=("Segoe UI", 9),
+            bd=0, padx=10, pady=6, cursor="hand2",
+            activebackground="#f1f5f9", activeforeground="#0f172a",
         )
-        self.lbl_student_count.pack(side=tk.RIGHT, padx=4)
+        clear_btn.pack(side=tk.RIGHT, pady=(10, 0))
 
-        # Actions
+        # ---- Action toolbar ----
         action_bar = tk.Frame(body, bg=theme.WHITE)
-        action_bar.pack(fill=tk.X, pady=(0, 8))
-        if can_add:
-            theme.primary_button(
-                action_bar, "➕ New Student Admission", self._open_admission, bg=theme.SUCCESS
-            ).pack(side=tk.LEFT, padx=(0, 8))
-        if can_edit:
-            theme.primary_button(
-                action_bar, "✏️ Edit Student", self._edit_selected, bg=theme.SLATE
-            ).pack(side=tk.LEFT, padx=(0, 8))
-        if can_delete:
-            theme.primary_button(
-                action_bar, "🗑 Remove Student", self._remove_selected, bg=theme.DANGER
-            ).pack(side=tk.LEFT, padx=(0, 8))
-        if can_view:
-            theme.primary_button(
-                action_bar, "👤 View Profile", self._open_profile, bg=theme.BRAND_BLUE
-            ).pack(side=tk.LEFT, padx=(8, 0))
-            theme.primary_button(
-                action_bar, "🪪 ID Card", self._reprint_id_card, bg=theme.SLATE
-            ).pack(side=tk.LEFT, padx=(8, 0))
-        theme.primary_button(
-            action_bar, "📁 Export Excel", self._export_excel, bg=theme.SUCCESS
-        ).pack(side=tk.RIGHT, padx=(8, 0))
+        action_bar.pack(fill=tk.X, pady=(0, 10))
 
-        # Table
+        def _toolbar_btn(parent, text, cmd, bg, fg="white", side=tk.LEFT):
+            btn = tk.Button(
+                parent, text=text, command=cmd, bg=bg, fg=fg,
+                font=("Segoe UI", 9, "bold"), bd=0, padx=12, pady=7,
+                cursor="hand2", activeforeground=fg,
+            )
+            btn.pack(side=side, padx=(0, 6))
+            return btn
+
+        if can_add:
+            _toolbar_btn(action_bar, "+  Add Student", self._open_admission, "#2563eb")
+        if can_edit:
+            _toolbar_btn(action_bar, "✎  Edit", self._edit_selected, "#64748b")
+        if can_delete:
+            _toolbar_btn(action_bar, "⏸  Deactivate", self._remove_selected, "#f59e0b")
+        if can_view:
+            _toolbar_btn(action_bar, "👤  View Profile", self._open_profile, "#3b82f6")
+            _toolbar_btn(action_bar, "🪪  ID Card", self._reprint_id_card, "#64748b")
+        _toolbar_btn(
+            action_bar, "📊  Export Excel", self._export_excel, "#16a34a", side=tk.RIGHT,
+        )
+
+        # ---- Table (id first so get_selected_student_id keeps working) ----
         if can_fee:
             cols = (
                 "id", "name", "fname", "class", "phone",
@@ -389,30 +490,71 @@ class _StudentDirectoryController:
 
         table_frame = tk.Frame(body, bg=theme.WHITE)
         table_frame.pack(fill=tk.BOTH, expand=True)
-        self.tree = ttk.Treeview(table_frame, columns=cols, show="headings")
+
+        style = ttk.Style()
+        try:
+            style.configure(
+                "Students.Treeview",
+                font=("Segoe UI", 10),
+                rowheight=32,
+                background=theme.WHITE,
+                fieldbackground=theme.WHITE,
+                foreground="#0f172a",
+            )
+            style.configure(
+                "Students.Treeview.Heading",
+                font=("Segoe UI", 9, "bold"),
+                background="#f8fafc",
+                foreground="#64748b",
+            )
+            style.map("Students.Treeview", background=[("selected", "#dbeafe")])
+        except Exception:
+            pass
+
+        self.tree = ttk.Treeview(
+            table_frame, columns=cols, show="headings", style="Students.Treeview",
+        )
 
         headings = {
-            "id": "STUDENT ID",
-            "name": "NAME",
-            "fname": "FATHER NAME",
-            "class": "CLASS",
-            "phone": "PHONE",
-            "month_status": "THIS MONTH FEE",
-            "total_balance": "TOTAL BALANCE",
-            "status": "STATUS",
+            "id": "Student ID",
+            "name": "Student",
+            "fname": "Father Name",
+            "class": "Class",
+            "phone": "Phone",
+            "month_status": "Fee Status",
+            "total_balance": "Balance",
+            "status": "Status",
         }
         col_widths = {
-            "id": 100, "name": 150, "fname": 130, "class": 80, "phone": 110,
-            "month_status": 150, "total_balance": 110, "status": 90,
+            "id": 110, "name": 150, "fname": 120, "class": 70, "phone": 115,
+            "month_status": 130, "total_balance": 100, "status": 80,
         }
         for col in cols:
             self.tree.heading(col, text=headings.get(col, col.upper()))
-            self.tree.column(col, width=col_widths.get(col, 90), anchor="center")
+            anchor = "w" if col in ("name", "fname") else "center"
+            self.tree.column(col, width=col_widths.get(col, 90), anchor=anchor, minwidth=60)
+
+        self.tree.tag_configure("fee_paid", foreground="#16a34a")
+        self.tree.tag_configure("fee_pending", foreground="#ea580c")
+        self.tree.tag_configure("fee_partial", foreground="#ca8a04")
+        self.tree.tag_configure("fee_overdue", foreground="#dc2626")
+        self.tree.tag_configure("bal_zero", foreground="#16a34a")
+        self.tree.tag_configure("bal_due", foreground="#dc2626")
+        self.tree.tag_configure("status_active", foreground="#16a34a")
+        self.tree.tag_configure("status_archived", foreground="#64748b")
 
         scroll = ttk.Scrollbar(table_frame, orient=tk.VERTICAL, command=self.tree.yview)
         self.tree.configure(yscroll=scroll.set)
         scroll.pack(side=tk.RIGHT, fill=tk.Y)
         self.tree.pack(fill=tk.BOTH, expand=True)
+
+        footer = tk.Frame(body, bg=theme.WHITE)
+        footer.pack(fill=tk.X, pady=(8, 0))
+        self.lbl_student_count = tk.Label(
+            footer, text="", font=("Segoe UI", 9),
+            bg=theme.WHITE, fg="#64748b",
+        )
+        self.lbl_student_count.pack(side=tk.LEFT)
 
         self.load_table()
 
@@ -429,6 +571,37 @@ class _StudentDirectoryController:
         classes = ["All Classes"] + [r[0] for r in rows if r[0]]
         self.cmb_class_filter["values"] = classes
         self.cmb_class_filter.set(current if current in classes else "All Classes")
+
+    def _update_stat_cards(self, all_rows, total_outstanding, current_month_info):
+        """Refresh the four reference-style metric cards from live data."""
+        total = len(all_rows)
+        active = 0
+        pending_fees = 0
+        classes = set()
+        for s_id, name, fname, phone, cls, total_f, paid_f, status in all_rows:
+            status = status or "Active"
+            if status == "Active":
+                active += 1
+            if cls:
+                classes.add(str(cls).strip())
+            bal = total_outstanding.get(s_id)
+            if bal is None:
+                bal = float(total_f or 0) - float(paid_f or 0)
+            cm = current_month_info.get(s_id)
+            month_unpaid = False
+            if cm and cm.get("status") in ("PENDING", "PARTIAL", "OVERDUE", "NO_CYCLE"):
+                month_unpaid = float(cm.get("balance") or 0) > 0 or cm.get("status") != "PAID"
+            if ((bal and bal > 0) or month_unpaid) and status == "Active":
+                pending_fees += 1
+
+        if self._stat_total is not None:
+            self._stat_total.config(text=str(total))
+        if self._stat_active is not None:
+            self._stat_active.config(text=str(active))
+        if self._stat_pending is not None:
+            self._stat_pending.config(text=str(pending_fees))
+        if self._stat_classes is not None:
+            self._stat_classes.config(text=str(len(classes)))
 
     def load_table(self, ev=None):
         if not self.tree:
@@ -453,6 +626,12 @@ class _StudentDirectoryController:
 
         total_outstanding, current_month_info = _fee_maps_for_directory()
         can_fee = rbac.can(self.user_role, "student.fee.view")
+
+        try:
+            self._update_stat_cards(rows, total_outstanding, current_month_info)
+        except Exception:
+            pass
+
         shown = 0
 
         for s_id, name, fname, phone, cls, total_f, paid_f, status in rows:
@@ -487,29 +666,22 @@ class _StudentDirectoryController:
                 month_status_code = cm["status"]
                 month_bal = float(cm["balance"])
                 month_status_label = _status_display(month_status_code)
-
-                # Show real pending amount for current month when not fully paid
                 if month_status_code == "PAID":
                     display_month = "Paid"
                 elif month_bal > 0:
-                    display_month = f"{month_status_label} ({month_bal:,.0f})"
+                    display_month = month_status_label
                 else:
                     display_month = month_status_label
             else:
-                # No fee_cycle row for the current month (e.g. cycles haven't
-                # been generated yet) — instead of showing "No Cycle", fall
-                # back to the student's default total_fee / paid_fee and
-                # compute a dynamic PENDING/PAID status so the column always
-                # reflects a real, actionable fee state.
                 default_balance = max(0.0, total_f - paid_f)
                 if default_balance > 0:
                     month_status_code = "PENDING"
                     month_bal = default_balance
-                    display_month = f"PENDING (Rs. {month_bal:,.0f})"
+                    display_month = "Pending"
                 else:
                     month_status_code = "PAID"
                     month_bal = 0.0
-                    display_month = "PAID"
+                    display_month = "Paid"
 
             if fee_filter == "This Month Paid" and month_status_code != "PAID":
                 continue
@@ -524,31 +696,54 @@ class _StudentDirectoryController:
             if fee_filter == "No Total Balance" and bal > 0:
                 continue
 
+            if bal <= 0:
+                bal_display = "Rs. 0"
+            else:
+                bal_display = f"Rs. {bal:,.0f}"
+
+            tags = []
+            code = (month_status_code or "").upper()
+            if code == "PAID":
+                tags.append("fee_paid")
+            elif code == "PENDING":
+                tags.append("fee_pending")
+            elif code == "PARTIAL":
+                tags.append("fee_partial")
+            elif code == "OVERDUE":
+                tags.append("fee_overdue")
+            if bal <= 0:
+                tags.append("bal_zero")
+            else:
+                tags.append("bal_due")
+            if status == "Active":
+                tags.append("status_active")
+            else:
+                tags.append("status_archived")
+
             if can_fee:
                 self.tree.insert(
                     "", tk.END,
                     values=(
-                        s_id, name, fname or "", cls or "", phone or "",
-                        display_month, f"{bal:,.0f}", status,
+                        s_id, name, fname or "—", cls or "", phone or "",
+                        display_month, bal_display, status,
                     ),
+                    tags=tuple(tags),
                 )
             else:
                 self.tree.insert(
                     "", tk.END,
-                    values=(s_id, name, fname or "", cls or "", phone or "", status),
+                    values=(s_id, name, fname or "—", cls or "", phone or "", status),
+                    tags=tuple(tags),
                 )
             shown += 1
 
         if self.lbl_student_count:
-            y, m = _current_year_month()
-            parts = [f"{shown} student(s)", f"Fee month {m:02d}/{y}"]
-            if fee_filter != "All Fees":
-                parts.append(fee_filter)
-            if class_filter != "All Classes":
-                parts.append(class_filter)
-            if status_filter != "Active Only":
-                parts.append(status_filter)
-            self.lbl_student_count.config(text=" · ".join(parts))
+            if shown == 0:
+                self.lbl_student_count.config(text="Showing 0 students")
+            else:
+                self.lbl_student_count.config(
+                    text=f"Showing 1 to {shown} of {shown} students"
+                )
 
     def _clear_filters(self):
         if self.ent_search:
@@ -665,54 +860,122 @@ class _StudentDirectoryController:
         messagebox.showinfo("ID Card Ready", f"ID Card generated:\n{out_path}", parent=self.root)
 
     def _remove_selected(self):
-        if not rbac.can(self.user_role, "student.delete"):
+        """Deactivate (archive) a student — does NOT permanently delete data.
+
+        Sets students.status = 'Archived' so the student disappears from the
+        default Active-Only list but all attendance, fees, marks stay intact.
+        If the selected student is already Archived, offers Reactivate.
+        """
+        if not (
+            rbac.can(self.user_role, "student.delete")
+            or rbac.can(self.user_role, "student.edit")
+        ):
             messagebox.showerror(
-                "Permission Denied", "You are not allowed to remove students.", parent=self.root
+                "Permission Denied",
+                "You are not allowed to deactivate students.",
+                parent=self.root,
             )
             return
         selected = self.tree.selection() if self.tree else ()
         if not selected:
             messagebox.showwarning(
-                "Select Student", "Pehle Students Directory se student select karein.", parent=self.root
+                "Select Student",
+                "Pehle Students Directory se student select karein.",
+                parent=self.root,
             )
             return
         values = self.tree.item(selected[0], "values")
         if not values:
-            messagebox.showwarning("Select Student", "Selected student ki information nahi mili.", parent=self.root)
+            messagebox.showwarning(
+                "Select Student",
+                "Selected student ki information nahi mili.",
+                parent=self.root,
+            )
             return
 
         student_id = str(values[0]).strip()
         student_name = str(values[1]).strip() if len(values) > 1 else student_id
 
         row = db.run(
-            "SELECT student_id, name FROM students WHERE student_id=?",
-            (student_id,), fetchone=True,
+            "SELECT student_id, name, COALESCE(status, 'Active') FROM students WHERE student_id=?",
+            (student_id,),
+            fetchone=True,
         )
         if not row:
             messagebox.showerror(
-                "Student Not Found", f"Student ID '{student_id}' database mein nahi mila.", parent=self.root
+                "Student Not Found",
+                f"Student ID '{student_id}' database mein nahi mila.",
+                parent=self.root,
             )
             self.load_table()
             return
 
+        current_status = (row[2] or "Active").strip()
+        is_archived = current_status.lower() in ("archived", "inactive", "deactivated")
+
+        if is_archived:
+            # Reactivate path
+            if not messagebox.askyesno(
+                "Reactivate Student",
+                f"Is student ko wapas Active karna hai?\n\n"
+                f"Student: {row[1]}\nStudent ID: {row[0]}\n"
+                f"Current status: {current_status}",
+                parent=self.root,
+            ):
+                return
+            try:
+                db.run(
+                    "UPDATE students SET status=? WHERE student_id=?",
+                    ("Active", student_id),
+                    commit=True,
+                )
+                _log_activity(
+                    self.current_user,
+                    f"Reactivated student {student_id} ({row[1]})",
+                )
+                self.load_table()
+                cb = self.callbacks.get("on_students_changed")
+                if cb:
+                    try:
+                        cb()
+                    except Exception:
+                        pass
+                messagebox.showinfo(
+                    "Student Reactivated",
+                    f"Student '{student_name}' ({student_id}) ab Active hai.",
+                    parent=self.root,
+                )
+            except Exception as exc:
+                messagebox.showerror(
+                    "Reactivate Failed",
+                    f"Student reactivate nahi ho saka.\n\nError:\n{exc}",
+                    parent=self.root,
+                )
+            return
+
+        # Deactivate path
         if not messagebox.askyesno(
-            "Confirm Remove Student",
-            f"Student ko permanently remove karna hai?\n\n"
+            "Confirm Deactivate Student",
+            f"Student ko Deactivate (Archive) karna hai?\n\n"
             f"Student: {row[1]}\nStudent ID: {row[0]}\n\n"
-            "⚠️ Ye action undo nahi ho sakta.",
-            icon="warning", parent=self.root,
+            "• Student Active list se hat jayega\n"
+            "• Attendance, fees, marks ka data safe rahega\n"
+            "• Baad mein Status filter se Reactivate kiya ja sakta hai",
+            icon="warning",
+            parent=self.root,
         ):
             return
 
         try:
-            # Delegates to student_lifecycle.permanent_delete_student(), which
-            # removes every dependent row (attendance, marks, academic-year,
-            # admission-extra) inside one atomic transaction before deleting
-            # the student — and takes a safety backup first. A plain
-            # "DELETE FROM students" here would raise a FOREIGN KEY
-            # constraint error for any student who already has attendance
-            # or marks records, since both tables reference students.student_id.
-            student_lifecycle.permanent_delete_student(self.user_role, student_id, self.current_user)
+            db.run(
+                "UPDATE students SET status=? WHERE student_id=?",
+                ("Archived", student_id),
+                commit=True,
+            )
+            _log_activity(
+                self.current_user,
+                f"Deactivated (archived) student {student_id} ({row[1]})",
+            )
             self.load_table()
             cb = self.callbacks.get("on_students_changed")
             if cb:
@@ -721,16 +984,17 @@ class _StudentDirectoryController:
                 except Exception:
                     pass
             messagebox.showinfo(
-                "Student Removed",
-                f"Student '{student_name}' ({student_id}) successfully remove ho gaya.",
+                "Student Deactivated",
+                f"Student '{student_name}' ({student_id}) deactivate ho gaya.\n"
+                "Data delete nahi hua — Status filter se 'Archived Only' mein dikhega.",
                 parent=self.root,
             )
-        except rbac.PermissionDenied:
-            messagebox.showerror(
-                "Permission Denied", "You are not allowed to remove students.", parent=self.root
-            )
         except Exception as exc:
-            messagebox.showerror("Remove Failed", f"Student remove nahi ho saka.\n\nError:\n{exc}", parent=self.root)
+            messagebox.showerror(
+                "Deactivate Failed",
+                f"Student deactivate nahi ho saka.\n\nError:\n{exc}",
+                parent=self.root,
+            )
 
     def _edit_selected(self):
         if not rbac.can(self.user_role, "student.edit"):

@@ -64,16 +64,42 @@ def apply_ttk_style():
     style.configure("TCombobox", font=FONT_BODY)
 
 
-def sidebar_button(parent, text, icon, command):
-    """A flat, full-width sidebar nav button. Returns the Button so the
-    caller can restyle it (active/inactive) later."""
+# Sidebar widths for collapse / expand
+SIDEBAR_EXPANDED = 200
+SIDEBAR_COLLAPSED = 64
+
+
+def sidebar_button(parent, text, icon, command, compact=False):
+    """Flat full-width sidebar nav button.
+
+    Stores _nav_label / _nav_icon so set_sidebar_compact() can switch
+    between expanded (icon + label) and collapsed (icon only).
+    """
     btn = tk.Button(
-        parent, text=f"  {icon}  {text}", command=command,
-        anchor="w", bg=NAVY, fg="#cbd5e1", activebackground=NAVY_LIGHT,
-        activeforeground=WHITE, font=FONT_SIDEBAR, bd=0, padx=14, pady=10,
+        parent,
+        text=(icon if compact else f"  {icon}  {text}"),
+        command=command,
+        anchor=("center" if compact else "w"),
+        bg=NAVY, fg="#cbd5e1", activebackground=NAVY_LIGHT,
+        activeforeground=WHITE, font=FONT_SIDEBAR, bd=0,
+        padx=(8 if compact else 14), pady=10,
         cursor="hand2", relief="flat",
     )
+    btn._nav_label = text
+    btn._nav_icon = icon
+    btn._nav_compact = bool(compact)
     return btn
+
+
+def set_sidebar_compact(btn, compact):
+    """Icon-only vs icon+label for a sidebar button."""
+    icon = getattr(btn, "_nav_icon", "")
+    label = getattr(btn, "_nav_label", "")
+    btn._nav_compact = bool(compact)
+    if compact:
+        btn.config(text=icon, anchor="center", padx=8)
+    else:
+        btn.config(text=f"  {icon}  {label}", anchor="w", padx=14)
 
 
 def set_sidebar_active(btn, active):

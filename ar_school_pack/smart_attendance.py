@@ -785,8 +785,8 @@ class AttendanceWindow:
 
         self.win = tk.Toplevel(parent)
         self.win.title("Smart Attendance")
-        self.win.geometry("1040x780")
-        self.win.config(bg=theme.SILVER)
+        self.win.geometry("1100x820")
+        self.win.config(bg="#F8FAFC")
         self.win.transient(parent)
 
         self._build_ui()
@@ -795,9 +795,15 @@ class AttendanceWindow:
 
     # ------------------------------------------------------------------
     def _build_ui(self):
-        header = tk.Frame(self.win, bg=theme.NAVY, padx=20, pady=12)
+        # ---- Dark navy header (matches reference) ----
+        header = tk.Frame(self.win, bg="#0f172a", padx=18, pady=12)
         header.pack(fill=tk.X)
-        tk.Label(header, text="📇  SMART ATTENDANCE", font=theme.FONT_H1, bg=theme.NAVY, fg="white").pack(anchor="w")
+        title_row = tk.Frame(header, bg="#0f172a")
+        title_row.pack(fill=tk.X)
+        tk.Label(
+            title_row, text="📇  SMART ATTENDANCE",
+            font=("Segoe UI", 14, "bold"), bg="#0f172a", fg="white",
+        ).pack(side=tk.LEFT)
         settings = get_settings()
         tk.Label(
             header,
@@ -805,83 +811,273 @@ class AttendanceWindow:
                 f"School Time: {settings['start_time']} – {settings['closing_time']}  |  "
                 f"Late after {settings.get('late_threshold_time', settings['start_time'])}"
             ),
-            font=theme.FONT_SMALL, bg=theme.NAVY, fg="#94a3b8",
-        ).pack(anchor="w")
+            font=("Segoe UI", 9), bg="#0f172a", fg="#94a3b8",
+        ).pack(anchor="w", pady=(2, 0))
 
-        # Fixed footer FIRST (pack bottom) so action buttons never get clipped
-        actions = tk.Frame(self.win, bg=theme.SILVER, padx=12, pady=10)
+        # ---- Fixed footer nav FIRST so it never clips ----
+        actions = tk.Frame(self.win, bg="#F8FAFC", padx=12, pady=10)
         actions.pack(side=tk.BOTTOM, fill=tk.X)
-        theme.primary_button(actions, "👤 Personal", self._open_personal_attendance,
-                              bg=theme.BRAND_BLUE).pack(side=tk.LEFT, padx=3)
-        theme.primary_button(actions, "📋 Attendance Review", self._open_attendance_review,
-                              bg=theme.BRAND_BLUE).pack(side=tk.LEFT, padx=3)
-        theme.primary_button(actions, "📊 Reports", self._open_unified_reports,
-                              bg=theme.BRAND_BLUE).pack(side=tk.LEFT, padx=3)
+
+        def _nav_btn(parent, text, cmd, bg, fg="white"):
+            b = tk.Button(
+                parent, text=text, command=cmd, bg=bg, fg=fg,
+                font=("Segoe UI", 9, "bold"), bd=0, padx=12, pady=7,
+                cursor="hand2", activeforeground=fg,
+            )
+            b.pack(side=tk.LEFT, padx=3)
+            return b
+
+        _nav_btn(actions, "👤  Personal", self._open_personal_attendance, "#2563eb")
+        _nav_btn(actions, "◇  Attendance Review", self._open_attendance_review, "#2563eb")
+        _nav_btn(actions, "📊  Reports", self._open_unified_reports, "#2563eb")
         if rbac.can(self.user_role, "settings.branding") or self.user_role == "Admin":
-            theme.primary_button(actions, "⚙ Timing", self._open_settings_dialog,
-                                  bg=theme.SLATE).pack(side=tk.LEFT, padx=3)
-            theme.primary_button(actions, "🌙 End-of-Day Absent", self._manual_run_auto_absent,
-                                  bg=theme.WARNING).pack(side=tk.LEFT, padx=3)
+            _nav_btn(actions, "⚙  Timing", self._open_settings_dialog, "#475569")
+            # Critical action — visually separated
+            tk.Frame(actions, bg="#e2e8f0", width=1, height=28).pack(side=tk.LEFT, padx=8)
+            _nav_btn(actions, "🌙  End-of-Day Absent", self._manual_run_auto_absent, "#c2410c")
 
-        body = tk.Frame(self.win, bg=theme.SILVER, padx=16, pady=12)
-        body.pack(fill=tk.BOTH, expand=True)
+        # ---- Scrollable body ----
+        canvas_host = tk.Frame(self.win, bg="#F8FAFC")
+        canvas_host.pack(fill=tk.BOTH, expand=True)
+        canvas = tk.Canvas(canvas_host, bg="#F8FAFC", highlightthickness=0)
+        vscroll = ttk.Scrollbar(canvas_host, orient=tk.VERTICAL, command=canvas.yview)
+        body = tk.Frame(canvas, bg="#F8FAFC", padx=14, pady=12)
+        body.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all")),
+        )
+        canvas_win = canvas.create_window((0, 0), window=body, anchor="nw")
+        canvas.configure(yscrollcommand=vscroll.set)
 
-        # ---- Scanner ----
+        def _on_canvas_cfg(event):
+            canvas.itemconfig(canvas_win, width=event.width)
+
+        canvas.bind("<Configure>", _on_canvas_cfg)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        vscroll.pack(side=tk.RIGHT, fill=tk.Y)
+
+        def _wheel(event):
+            if getattr(event, "delta", 0):
+                canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            elif getattr(event, "num", None) == 4:
+                canvas.yview_scroll(-1, "units")
+            elif getattr(event, "num", None) == 5:
+                canvas.yview_scroll(1, "units")
+
+        canvas.bind_all("<MouseWheel>", _wheel)
+        canvas.bind_all("<Button-4>", _wheel)
+        canvas.bind_all("<Button-5>", _wheel)
+
+        def _unbind_wheel():
+            try:
+                canvas.unbind_all("<MouseWheel>")
+                canvas.unbind_all("<Button-4>")
+                canvas.unbind_all("<Button-5>")
+            except Exception:
+                pass
+
+        self.win.protocol("WM_DELETE_WINDOW", lambda: (_unbind_wheel(), self.win.destroy()))
+
+        # ---- Scanner card ----
         if self.can_mark:
-            scan_card, scan_body = theme.section_card(body, "Scanner — Ready")
+            scan_card = tk.Frame(
+                body, bg=theme.WHITE,
+                highlightbackground="#e2e8f0", highlightthickness=1,
+            )
             scan_card.pack(fill=tk.X, pady=(0, 10))
-            row = tk.Frame(scan_body, bg=theme.WHITE)
-            row.pack(fill=tk.X)
-            tk.Label(row, text="Scan / Enter Student ID:", font=theme.FONT_BODY_BOLD, bg=theme.WHITE).pack(
-                side=tk.LEFT)
-            self.ent_scan = tk.Entry(row, font=("Segoe UI", 12, "bold"), width=22, bg="#fef08a")
-            self.ent_scan.pack(side=tk.LEFT, padx=8, ipady=4)
-            self.ent_scan.bind("<Return>", lambda e: self.process_scan())
-            theme.primary_button(row, "Mark Present", self.process_scan).pack(side=tk.LEFT, padx=4)
-            self.lbl_scan_result = tk.Label(scan_body, text="Ready for next scan...", font=theme.FONT_BODY_BOLD,
-                                             bg=theme.WHITE, fg=theme.TEXT_MUTED)
-            self.lbl_scan_result.pack(anchor="w", pady=(8, 0))
+            scan_inner = tk.Frame(scan_card, bg=theme.WHITE, padx=16, pady=12)
+            scan_inner.pack(fill=tk.X)
 
-        # ---- Live summary ----
-        self.summary_frame = tk.Frame(body, bg=theme.SILVER)
+            tk.Label(
+                scan_inner, text="Scanner — Ready",
+                font=("Segoe UI", 12, "bold"), bg=theme.WHITE, fg="#0f172a",
+            ).pack(anchor="w")
+
+            row = tk.Frame(scan_inner, bg=theme.WHITE)
+            row.pack(fill=tk.X, pady=(10, 0))
+            tk.Label(
+                row, text="Scan / Enter Student ID:",
+                font=("Segoe UI", 10, "bold"), bg=theme.WHITE, fg="#334155",
+            ).pack(side=tk.LEFT)
+            self.ent_scan = tk.Entry(
+                row, font=("Segoe UI", 12, "bold"), width=24,
+                bg="#eff6ff", fg="#0f172a", insertbackground="#2563eb",
+                relief="solid", bd=1,
+                highlightthickness=2, highlightbackground="#93c5fd",
+                highlightcolor="#2563eb",
+            )
+            self.ent_scan.pack(side=tk.LEFT, padx=10, ipady=6)
+            self.ent_scan.bind("<Return>", lambda e: self.process_scan())
+            tk.Button(
+                row, text="Mark Present", command=self.process_scan,
+                bg="#2563eb", fg="white", font=("Segoe UI", 10, "bold"),
+                bd=0, padx=14, pady=7, cursor="hand2",
+                activebackground="#1d4ed8", activeforeground="white",
+            ).pack(side=tk.LEFT, padx=4)
+
+            self.lbl_scan_result = tk.Label(
+                scan_inner, text="Ready for next scan...",
+                font=("Segoe UI", 10), bg=theme.WHITE, fg="#64748b",
+            )
+            self.lbl_scan_result.pack(anchor="w", pady=(10, 0))
+        else:
+            self.ent_scan = None
+            self.lbl_scan_result = None
+
+        # ---- Live summary cards (Present / Absent / Leave / Late / Total) ----
+        self.summary_frame = tk.Frame(body, bg="#F8FAFC")
         self.summary_frame.pack(fill=tk.X, pady=(0, 10))
         self._render_summary()
 
-        # ---- Manual attendance ----
+        # ---- Manual Attendance ----
         if self.can_mark:
-            man_card, man_body = theme.section_card(body, "Manual Attendance")
+            man_card = tk.Frame(
+                body, bg=theme.WHITE,
+                highlightbackground="#e2e8f0", highlightthickness=1,
+            )
             man_card.pack(fill=tk.X, pady=(0, 10))
-            row = tk.Frame(man_body, bg=theme.WHITE)
-            row.pack(fill=tk.X)
-            tk.Label(row, text="Search (ID / Name / Class):", bg=theme.WHITE, font=theme.FONT_SMALL).pack(
-                side=tk.LEFT)
-            self.ent_manual_search = tk.Entry(row, font=theme.FONT_BODY, width=24)
-            self.ent_manual_search.pack(side=tk.LEFT, padx=6)
-            self.ent_manual_search.bind("<Return>", lambda e: self._manual_search())
-            theme.primary_button(row, "Search", self._manual_search).pack(side=tk.LEFT)
+            man_inner = tk.Frame(man_card, bg=theme.WHITE, padx=14, pady=12)
+            man_inner.pack(fill=tk.BOTH, expand=True)
 
-            self.tree_manual = ttk.Treeview(man_body, columns=("id", "name", "class", "today_status"),
-                                             show="headings", height=5)
-            for c, h, w in [("id", "Student ID", 110), ("name", "Name", 160), ("class", "Class", 100),
-                            ("today_status", "Today's Status", 120)]:
+            tk.Label(
+                man_inner, text="Manual Attendance",
+                font=("Segoe UI", 12, "bold"), bg=theme.WHITE, fg="#0f172a",
+            ).pack(anchor="w")
+
+            search_row = tk.Frame(man_inner, bg=theme.WHITE)
+            search_row.pack(fill=tk.X, pady=(10, 8))
+            tk.Label(
+                search_row, text="Search (ID / Name / Class):",
+                bg=theme.WHITE, font=("Segoe UI", 9), fg="#64748b",
+            ).pack(side=tk.LEFT)
+            self.ent_manual_search = tk.Entry(
+                search_row, font=("Segoe UI", 10), width=26,
+                relief="solid", bd=1,
+            )
+            self.ent_manual_search.pack(side=tk.LEFT, padx=8, ipady=5)
+            self.ent_manual_search.bind("<Return>", lambda e: self._manual_search())
+            tk.Button(
+                search_row, text="Search", command=self._manual_search,
+                bg="#2563eb", fg="white", font=("Segoe UI", 9, "bold"),
+                bd=0, padx=12, pady=6, cursor="hand2",
+                activebackground="#1d4ed8", activeforeground="white",
+            ).pack(side=tk.LEFT)
+
+            # Table with dark header styling
+            style = ttk.Style()
+            try:
+                style.configure(
+                    "AttManual.Treeview",
+                    font=("Segoe UI", 10),
+                    rowheight=28,
+                    background=theme.WHITE,
+                    fieldbackground=theme.WHITE,
+                    foreground="#0f172a",
+                )
+                style.configure(
+                    "AttManual.Treeview.Heading",
+                    font=("Segoe UI", 9, "bold"),
+                    background="#0f172a",
+                    foreground="white",
+                )
+                style.map("AttManual.Treeview", background=[("selected", "#dbeafe")])
+            except Exception:
+                pass
+
+            table_wrap = tk.Frame(man_inner, bg=theme.WHITE)
+            table_wrap.pack(fill=tk.BOTH, expand=True)
+            self.tree_manual = ttk.Treeview(
+                table_wrap,
+                columns=("id", "name", "class", "today_status"),
+                show="headings",
+                height=6,
+                style="AttManual.Treeview",
+            )
+            for c, h, w in [
+                ("id", "Student ID", 120),
+                ("name", "Name", 180),
+                ("class", "Class", 100),
+                ("today_status", "Today's Status", 120),
+            ]:
                 self.tree_manual.heading(c, text=h)
                 self.tree_manual.column(c, width=w, anchor="center")
-            self.tree_manual.pack(fill=tk.X, pady=6)
+            man_scroll = ttk.Scrollbar(table_wrap, orient=tk.VERTICAL, command=self.tree_manual.yview)
+            self.tree_manual.configure(yscrollcommand=man_scroll.set)
+            man_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+            self.tree_manual.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, pady=(0, 8))
+            try:
+                self.tree_manual.tag_configure("Present", foreground="#16a34a")
+                self.tree_manual.tag_configure("Absent", foreground="#dc2626")
+                self.tree_manual.tag_configure("Leave", foreground="#2563eb")
+                self.tree_manual.tag_configure("Late", foreground="#ea580c")
+                self.tree_manual.tag_configure("even", background="#ffffff")
+                self.tree_manual.tag_configure("odd", background="#f8fafc")
+            except Exception:
+                pass
 
-            btnrow = tk.Frame(man_body, bg=theme.WHITE)
-            btnrow.pack(fill=tk.X)
+            # Status action buttons — reference colours
+            btnrow = tk.Frame(man_inner, bg=theme.WHITE)
+            btnrow.pack(fill=tk.X, pady=(0, 2))
+            status_colors = {
+                "Present": "#16a34a",
+                "Absent": "#dc2626",
+                "Leave": "#2563eb",
+                "Late": "#ea580c",
+            }
             for status in STATUS_VALUES:
-                theme.primary_button(btnrow, status, lambda st=status: self._manual_mark(st),
-                                      bg=self._status_color(status)).pack(side=tk.LEFT, padx=4)
+                tk.Button(
+                    btnrow, text=status,
+                    command=lambda st=status: self._manual_mark(st),
+                    bg=status_colors.get(status, "#64748b"), fg="white",
+                    font=("Segoe UI", 9, "bold"), bd=0, padx=14, pady=7,
+                    cursor="hand2", activeforeground="white",
+                ).pack(side=tk.LEFT, padx=(0, 6))
+        else:
+            self.ent_manual_search = None
+            self.tree_manual = None
 
-        # ---- Recent scans ----
-        recent_card, recent_body = theme.section_card(body, "Recent Attendance")
-        recent_card.pack(fill=tk.BOTH, expand=True)
+        # ---- Recent Attendance ----
+        recent_card = tk.Frame(
+            body, bg=theme.WHITE,
+            highlightbackground="#e2e8f0", highlightthickness=1,
+        )
+        recent_card.pack(fill=tk.BOTH, expand=True, pady=(0, 4))
+        recent_inner = tk.Frame(recent_card, bg=theme.WHITE, padx=14, pady=12)
+        recent_inner.pack(fill=tk.BOTH, expand=True)
+
+        tk.Label(
+            recent_inner, text="Recent Attendance",
+            font=("Segoe UI", 12, "bold"), bg=theme.WHITE, fg="#0f172a",
+        ).pack(anchor="w", pady=(0, 8))
+
+        try:
+            style = ttk.Style()
+            style.configure(
+                "AttRecent.Treeview",
+                font=("Segoe UI", 10),
+                rowheight=28,
+                background=theme.WHITE,
+                fieldbackground=theme.WHITE,
+                foreground="#0f172a",
+            )
+            style.configure(
+                "AttRecent.Treeview.Heading",
+                font=("Segoe UI", 9, "bold"),
+                background="#0f172a",
+                foreground="white",
+            )
+            style.map("AttRecent.Treeview", background=[("selected", "#dbeafe")])
+        except Exception:
+            pass
+
+        recent_wrap = tk.Frame(recent_inner, bg=theme.WHITE)
+        recent_wrap.pack(fill=tk.BOTH, expand=True)
         self.tree_recent = ttk.Treeview(
-            recent_body,
+            recent_wrap,
             columns=("time", "id", "name", "class", "method", "status"),
             show="headings",
-            height=10,
+            height=8,
+            style="AttRecent.Treeview",
         )
         col_cfg = [
             ("time", "Time", 70),
@@ -895,41 +1091,128 @@ class AttendanceWindow:
             self.tree_recent.heading(c, text=h)
             self.tree_recent.column(c, width=w, anchor="center")
         for st, color in [
-            ("Present", theme.SUCCESS),
-            ("Absent", theme.DANGER),
-            ("Leave", theme.INFO),
-            ("Late", theme.WARNING),
+            ("Present", "#16a34a"),
+            ("Absent", "#dc2626"),
+            ("Leave", "#2563eb"),
+            ("Late", "#ea580c"),
         ]:
             self.tree_recent.tag_configure(st, foreground=color)
-        recent_scroll = ttk.Scrollbar(recent_body, orient=tk.VERTICAL, command=self.tree_recent.yview)
+        try:
+            self.tree_recent.tag_configure("even", background="#ffffff")
+            self.tree_recent.tag_configure("odd", background="#f8fafc")
+        except Exception:
+            pass
+        recent_scroll = ttk.Scrollbar(recent_wrap, orient=tk.VERTICAL, command=self.tree_recent.yview)
         self.tree_recent.configure(yscrollcommand=recent_scroll.set)
         recent_scroll.pack(side=tk.RIGHT, fill=tk.Y)
-        self.tree_recent.pack(fill=tk.BOTH, expand=True)
+        self.tree_recent.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        # Action buttons live in fixed footer (packed at bottom of window above)
         self._refresh_recent()
 
     @staticmethod
     def _status_color(status):
-        return {"Present": theme.SUCCESS, "Absent": theme.DANGER, "Leave": theme.INFO,
-                "Late": theme.WARNING}.get(status, theme.SLATE)
+        return {
+            "Present": "#16a34a",
+            "Absent": "#dc2626",
+            "Leave": "#2563eb",
+            "Late": "#ea580c",
+        }.get(status, "#64748b")
 
     # ------------------------------------------------------------------
     def _render_summary(self):
+        """Modern summary cards: Present | Absent | Leave | Late | Total."""
         for w in self.summary_frame.winfo_children():
             w.destroy()
         today = datetime.now().strftime("%Y-%m-%d")
         counts = {}
         for st in STATUS_VALUES:
-            counts[st] = db.run("SELECT COUNT(*) FROM attendance WHERE date=? AND status=?",
-                                 (today, st), fetchone=True)[0]
+            try:
+                counts[st] = db.run(
+                    "SELECT COUNT(*) FROM attendance WHERE date=? AND status=?",
+                    (today, st), fetchone=True,
+                )[0]
+            except Exception:
+                counts[st] = 0
         total = sum(counts.values())
-        row = tk.Frame(self.summary_frame, bg=theme.SILVER)
+
+        row = tk.Frame(self.summary_frame, bg="#F8FAFC")
         row.pack(fill=tk.X)
-        for st in STATUS_VALUES + ["Total"]:
-            val = counts.get(st, total) if st != "Total" else total
-            card = theme.stat_card(row, st, val, accent=self._status_color(st) if st != "Total" else theme.NAVY)
-            card.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=4)
+
+        # label, value, accent, icon glyph, soft icon bg
+        items = [
+            ("Present", counts.get("Present", 0), "#16a34a", "✓", "#dcfce7"),
+            ("Absent", counts.get("Absent", 0), "#dc2626", "✕", "#fee2e2"),
+            ("Leave", counts.get("Leave", 0), "#2563eb", "◷", "#dbeafe"),
+            ("Late", counts.get("Late", 0), "#ea580c", "⏰", "#ffedd5"),
+            ("Total", total, "#0f172a", "☰", "#e2e8f0"),
+        ]
+        for i, (label, val, accent, icon, icon_bg) in enumerate(items):
+            card = tk.Frame(
+                row, bg="#ffffff",
+                highlightbackground="#e2e8f0", highlightthickness=1,
+            )
+            card.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0 if i == 0 else 8, 0))
+            stripe = tk.Frame(card, bg=accent, width=4)
+            stripe.pack(side=tk.LEFT, fill=tk.Y)
+            inner = tk.Frame(card, bg="#ffffff", padx=12, pady=12)
+            inner.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+            top = tk.Frame(inner, bg="#ffffff")
+            top.pack(fill=tk.X)
+            icon_lbl = tk.Label(
+                top, text=icon, font=("Segoe UI", 11, "bold"),
+                bg=icon_bg, fg=accent, width=3, pady=2,
+            )
+            icon_lbl.pack(side=tk.LEFT, padx=(0, 8))
+            tk.Label(
+                top, text=label, font=("Segoe UI", 9),
+                bg="#ffffff", fg="#64748b",
+            ).pack(side=tk.LEFT, anchor="w")
+            tk.Label(
+                inner, text=str(val), font=("Segoe UI", 20, "bold"),
+                bg="#ffffff", fg="#0f172a",
+            ).pack(anchor="w", pady=(6, 0))
+
+    def _show_toast(self, message, kind="info"):
+        """Brief non-blocking banner at top of attendance window (scan feedback)."""
+        colors = {
+            "success": ("#166534", "#dcfce7", "#16a34a"),
+            "error": ("#991b1b", "#fee2e2", "#dc2626"),
+            "warning": ("#9a3412", "#ffedd5", "#ea580c"),
+            "info": ("#1e40af", "#dbeafe", "#2563eb"),
+        }
+        fg, bg, border = colors.get(kind, colors["info"])
+        try:
+            if getattr(self, "_toast_frame", None) is not None:
+                try:
+                    self._toast_frame.destroy()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        toast = tk.Frame(
+            self.win, bg=bg,
+            highlightbackground=border, highlightthickness=1,
+        )
+        toast.place(relx=0.5, y=8, anchor="n")
+        tk.Label(
+            toast, text=message, font=("Segoe UI", 10, "bold"),
+            bg=bg, fg=fg, padx=16, pady=8,
+        ).pack()
+        self._toast_frame = toast
+
+        def _hide():
+            try:
+                toast.destroy()
+            except Exception:
+                pass
+            if getattr(self, "_toast_frame", None) is toast:
+                self._toast_frame = None
+
+        try:
+            self.win.after(3200, _hide)
+        except Exception:
+            pass
 
     def _refresh_recent(self):
         """Reload today's attendance into the Recent Attendance table.
@@ -966,11 +1249,15 @@ class AttendanceWindow:
                 aid, sid, name, cls, method, status = row[:6]
                 in_time = None
             time_str = (in_time or "").strip() or "—"
-            tag = status if status in STATUS_VALUES else ""
+            tags = []
+            if status in STATUS_VALUES:
+                tags.append(status)
+            # zebra after insert count
+            tags.append("odd" if len(self.tree_recent.get_children()) % 2 else "even")
             self.tree_recent.insert(
                 "", tk.END,
                 values=(time_str, sid, name or "?", cls or "-", method or "-", status or "-"),
-                tags=(tag,) if tag else (),
+                tags=tuple(tags),
             )
 
     # ------------------------------------------------------------------
@@ -998,10 +1285,19 @@ class AttendanceWindow:
             "(student_id LIKE ? OR name LIKE ? OR class_sec LIKE ?) AND COALESCE(status,'Active')='Active'",
             (f"%{q}%", f"%{q}%", f"%{q}%"), fetchall=True)
         today = datetime.now().strftime("%Y-%m-%d")
-        for sid, name, cls in rows:
+        for idx, (sid, name, cls) in enumerate(rows):
             existing = db.run("SELECT status FROM attendance WHERE student_id=? AND date=?",
                                (sid, today), fetchone=True)
-            self.tree_manual.insert("", tk.END, values=(sid, name, cls or "-", existing[0] if existing else "—"))
+            st = existing[0] if existing else "—"
+            tags = []
+            if st in STATUS_VALUES:
+                tags.append(st)
+            tags.append("odd" if idx % 2 else "even")
+            self.tree_manual.insert(
+                "", tk.END,
+                values=(sid, name, cls or "-", st),
+                tags=tuple(tags),
+            )
 
     def _manual_mark(self, status):
         sel = self.tree_manual.focus()
@@ -1021,8 +1317,10 @@ class AttendanceWindow:
                           (sid,), fetchone=True)
         if not student:
             if scan_ui:
-                self.lbl_scan_result.config(text=f"✖ Student Not Found — '{sid}' does not match any active record.",
-                                             fg=theme.DANGER)
+                msg = f"✖ Student Not Found — '{sid}'"
+                if self.lbl_scan_result is not None:
+                    self.lbl_scan_result.config(text=msg, fg="#dc2626")
+                self._show_toast(msg, "error")
             else:
                 messagebox.showerror("Student Not Found", f"'{sid}' does not match any student.", parent=self.win)
             return
@@ -1030,7 +1328,9 @@ class AttendanceWindow:
         if (active_status or "Active") != "Active":
             msg = f"'{name}' is Archived and cannot be marked."
             if scan_ui:
-                self.lbl_scan_result.config(text=f"✖ {msg}", fg=theme.DANGER)
+                if self.lbl_scan_result is not None:
+                    self.lbl_scan_result.config(text=f"✖ {msg}", fg="#dc2626")
+                self._show_toast(f"✖ {msg}", "error")
             else:
                 messagebox.showerror("Student Archived", msg, parent=self.win)
             return
@@ -1043,7 +1343,10 @@ class AttendanceWindow:
             ex_status, ex_time = existing
             msg = f"Already Marked — {name}'s attendance is already recorded today.\nFirst: {ex_time or '-'}  Status: {ex_status}"
             if scan_ui:
-                self.lbl_scan_result.config(text=f"⚠ {msg}", fg=theme.WARNING)
+                short = f"⚠ Already marked — {name} ({ex_status})"
+                if self.lbl_scan_result is not None:
+                    self.lbl_scan_result.config(text=f"⚠ {msg}", fg="#ea580c")
+                self._show_toast(short, "warning")
             else:
                 messagebox.showinfo("Already Marked", msg, parent=self.win)
             return
@@ -1071,15 +1374,18 @@ class AttendanceWindow:
                                 (sid, today), fetchone=True)
             msg = f"Already Marked — {name}'s attendance was just recorded.\n{existing2}"
             if scan_ui:
-                self.lbl_scan_result.config(text=f"⚠ {msg}", fg=theme.WARNING)
+                if self.lbl_scan_result is not None:
+                    self.lbl_scan_result.config(text=f"⚠ {msg}", fg="#ea580c")
+                self._show_toast(f"⚠ Already marked — {name}", "warning")
             else:
                 messagebox.showinfo("Already Marked", msg, parent=self.win)
             return
 
         if scan_ui:
-            self.lbl_scan_result.config(
-                text=f"✓ ATTENDANCE MARKED — {name}  |  {sid}  |  {cls or '-'}  |  {now_time}  |  {status.upper()}",
-                fg=theme.SUCCESS)
+            msg = f"✓  {name}  ·  {sid}  ·  {status.upper()}  ·  {now_time}"
+            if self.lbl_scan_result is not None:
+                self.lbl_scan_result.config(text=msg, fg="#16a34a")
+            self._show_toast(msg, "success")
 
         self._render_summary()
         self._refresh_recent()

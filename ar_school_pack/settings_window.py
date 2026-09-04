@@ -204,7 +204,7 @@ class SettingsPanel:
         self._build_fee_automation_settings(inner)
         self._build_message_template_settings(inner)
         self._build_backup_security_settings(inner)
-        self._build_grading_settings(inner)
+        self._build_results_policy_note(inner)
 
     # ---- Attendance ----
     def _build_attendance_timing_settings(self, parent):
@@ -555,118 +555,27 @@ class SettingsPanel:
         self._log("Updated backup / security settings")
         messagebox.showinfo("Saved", "Backup settings saved.", parent=self.parent)
 
-    # ---- Grading ----
-    def _build_grading_settings(self, parent):
+    # ---- Results policy note (managed inside Results module) ----
+    def _build_results_policy_note(self, parent):
+        """Grading / pass rules live in Results → Settings (results_engine)."""
         outer = tk.Frame(parent, bg=theme.SILVER)
         outer.pack(fill=tk.X, padx=12, pady=(6, 16))
-
-        criteria = results_engine.get_passing_criteria()
-        frame = tk.LabelFrame(
-            outer, text="Pass/Fail Criteria", font=("Segoe UI", 10, "bold"), padx=10, pady=10
-        )
-        frame.pack(fill=tk.X, pady=(0, 8))
-
-        tk.Label(frame, text="Minimum Overall Percentage to Pass:").grid(
-            row=0, column=0, sticky="w", pady=5
-        )
-        self.ent_min_overall = tk.Entry(frame, width=10)
-        self.ent_min_overall.insert(0, str(criteria["min_overall_percent"]))
-        self.ent_min_overall.grid(row=0, column=1, pady=5)
-
-        self.var_require_each = tk.BooleanVar(value=criteria["require_pass_each_subject"])
-        tk.Checkbutton(
-            frame, text="Require passing each individual subject", variable=self.var_require_each
-        ).grid(row=1, column=0, columnspan=2, sticky="w")
-
-        tk.Label(frame, text="Minimum % per Subject:").grid(row=2, column=0, sticky="w", pady=5)
-        self.ent_min_subject = tk.Entry(frame, width=10)
-        self.ent_min_subject.insert(0, str(criteria["min_subject_percent"]))
-        self.ent_min_subject.grid(row=2, column=1, pady=5)
-
-        tk.Button(
-            frame,
-            text="Save Pass/Fail Rules",
-            command=self._save_passing_criteria,
-            bg="#16a34a",
-            fg="white",
-            font=("Segoe UI", 9, "bold"),
-        ).grid(row=3, column=0, pady=10, sticky="w")
-
-        grade_frame = tk.LabelFrame(
-            outer,
-            text="Grade Bands (Grade, Min %, Max %)",
-            font=("Segoe UI", 10, "bold"),
-            padx=10,
-            pady=10,
-        )
-        grade_frame.pack(fill=tk.X)
-
-        self.tree_grades = ttk.Treeview(
-            grade_frame, columns=("grade", "min", "max"), show="headings", height=6
-        )
-        for col, h in [("grade", "Grade"), ("min", "Min %"), ("max", "Max %")]:
-            self.tree_grades.heading(col, text=h)
-            self.tree_grades.column(col, anchor="center")
-        self.tree_grades.pack(fill=tk.X, pady=5)
-        self._load_grade_table()
-
-        add_frame = tk.Frame(grade_frame)
-        add_frame.pack(fill=tk.X, pady=5)
-        tk.Label(add_frame, text="Grade:").pack(side=tk.LEFT, padx=5)
-        self.ent_new_grade = tk.Entry(add_frame, width=6)
-        self.ent_new_grade.pack(side=tk.LEFT, padx=5)
-        tk.Label(add_frame, text="Min %:").pack(side=tk.LEFT, padx=5)
-        self.ent_new_grade_min = tk.Entry(add_frame, width=6)
-        self.ent_new_grade_min.pack(side=tk.LEFT, padx=5)
-        tk.Label(add_frame, text="Max %:").pack(side=tk.LEFT, padx=5)
-        self.ent_new_grade_max = tk.Entry(add_frame, width=6)
-        self.ent_new_grade_max.pack(side=tk.LEFT, padx=5)
-        tk.Button(
-            add_frame, text="Add Grade Band", command=self._add_grade_band, bg="#2563eb", fg="white"
-        ).pack(side=tk.LEFT, padx=10)
-        tk.Button(
-            add_frame,
-            text="Clear All Bands",
-            command=self._clear_grade_bands,
-            bg="#dc2626",
-            fg="white",
-        ).pack(side=tk.LEFT, padx=5)
-
-    def _load_grade_table(self):
-        self.tree_grades.delete(*self.tree_grades.get_children())
-        for grade, lo, hi in results_engine.get_grading_bands():
-            self.tree_grades.insert("", tk.END, values=(grade, lo, hi))
-
-    def _add_grade_band(self):
-        try:
-            grade = self.ent_new_grade.get().strip()
-            lo = float(self.ent_new_grade_min.get())
-            hi = float(self.ent_new_grade_max.get())
-        except ValueError:
-            messagebox.showerror("Error", "Enter valid numeric percentages.", parent=self.parent)
-            return
-        existing = results_engine.get_grading_bands()
-        bands = [(g, mn, mx) for g, mn, mx in existing] + [(grade, lo, hi)]
-        results_engine.set_grading_bands(bands)
-        self._load_grade_table()
-
-    def _clear_grade_bands(self):
-        if messagebox.askyesno("Confirm", "Remove all grade bands?", parent=self.parent):
-            results_engine.set_grading_bands([])
-            self._load_grade_table()
-
-    def _save_passing_criteria(self):
-        try:
-            min_overall = float(self.ent_min_overall.get())
-            min_subject = float(self.ent_min_subject.get())
-        except ValueError:
-            messagebox.showerror("Error", "Enter valid numeric percentages.", parent=self.parent)
-            return
-        results_engine.set_passing_criteria(
-            min_overall, self.var_require_each.get(), min_subject
-        )
-        self._log("Updated pass/fail grading criteria")
-        messagebox.showinfo("Saved", "Pass/Fail criteria updated.", parent=self.parent)
+        card, body = theme.section_card(outer, "Results grading & pass rules")
+        card.pack(fill=tk.X)
+        tk.Label(
+            body,
+            text=(
+                "Pass %, subject rules, aur grade bands ab Results module ke "
+                "⚙ Settings tab se manage hote hain (results_engine — single source of truth).\n\n"
+                "Yahan duplicate settings nahi rakhi gayi taake policy mismatch na ho.\n"
+                "Path: Results & Academics → ⚙ Settings"
+            ),
+            font=theme.FONT_BODY,
+            bg=theme.WHITE,
+            fg=theme.TEXT_MUTED,
+            wraplength=560,
+            justify="left",
+        ).pack(anchor="w", padx=8, pady=10)
 
     # ------------------------------------------------------------------
     # User Management / RBAC

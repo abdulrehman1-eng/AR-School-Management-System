@@ -227,8 +227,14 @@ class StudentManagementApp:
         # ---------------- Body: sidebar + content ----------------
         body = tk.Frame(self.root, bg=theme.SILVER)
         body.pack(fill=tk.BOTH, expand=True)
+        self._body = body
 
-        self.sidebar = tk.Frame(body, bg=theme.NAVY, width=220)
+        # Collapsible sidebar (expanded by default)
+        self._sidebar_expanded = True
+        self._sidebar_w_exp = getattr(theme, "SIDEBAR_EXPANDED", 200)
+        self._sidebar_w_col = getattr(theme, "SIDEBAR_COLLAPSED", 64)
+
+        self.sidebar = tk.Frame(body, bg=theme.NAVY, width=self._sidebar_w_exp)
         self.sidebar.pack(side=tk.LEFT, fill=tk.Y)
         self.sidebar.pack_propagate(False)
 
@@ -286,79 +292,103 @@ class StudentManagementApp:
         if can_logs:
             add_page("logs", self.tab_logs)
 
-        # ---------------- Sidebar navigation (scrollable, compact labels) ----
-        # Short labels so text never clips outside the 220px sidebar on
-        # smaller Windows 11 / laptop screens. Long titles were overflowing.
+        # ---------------- Sidebar navigation (scrollable, collapsible) ----
         nav_items = [
             ("dashboard", "Dashboard", "🏠", True),
             ("students", "Students", "🎓", True),
-            ("attendance", "Attendance", "🗓️", True),  # special: popup, not show_page
+            ("attendance", "Attendance", "🗓️", True),
             ("results", "Results", "📊", can_results),
             ("teachers", "Teachers", "👨‍🏫", can_teachers),
             ("timetable", "Timetable", "🕐", True),
+            ("fees", "Fee Management", "💳", rbac.can(self.user_role, "student.fee.view")),
             ("accounting", "Finance", "💰", can_accounting),
             ("settings", "Settings", "⚙️", can_settings),
             ("logs", "Audit Logs", "📜", can_logs),
         ]
 
-        # Fixed AI button at bottom — always visible
-        ai_btn = theme.sidebar_button(
+        # Toggle button at top of sidebar
+        toggle_row = tk.Frame(self.sidebar, bg=theme.NAVY)
+        toggle_row.pack(fill=tk.X, pady=(8, 4), padx=4)
+        self._sidebar_toggle_btn = tk.Button(
+            toggle_row,
+            text="☰",
+            command=self.toggle_sidebar,
+            bg=theme.NAVY,
+            fg="#cbd5e1",
+            activebackground=theme.NAVY_LIGHT,
+            activeforeground="white",
+            font=("Segoe UI", 14),
+            bd=0,
+            padx=10,
+            pady=4,
+            cursor="hand2",
+            relief="flat",
+        )
+        self._sidebar_toggle_btn.pack(side=tk.LEFT)
+
+        # Fixed AI button at bottom
+        self._ai_btn = theme.sidebar_button(
             self.sidebar, "AI Assistant", "🤖", command=self.open_ai_assistant,
         )
-        ai_btn.pack(fill=tk.X, side=tk.BOTTOM, pady=(4, 10), padx=4)
+        self._ai_btn.pack(fill=tk.X, side=tk.BOTTOM, pady=(4, 10), padx=4)
 
-        # Scrollable nav area so buttons never go off-screen
+        # Scrollable nav area
         nav_outer = tk.Frame(self.sidebar, bg=theme.NAVY)
-        nav_outer.pack(fill=tk.BOTH, expand=True, pady=(8, 0))
+        nav_outer.pack(fill=tk.BOTH, expand=True, pady=(4, 0))
+        self._nav_outer = nav_outer
 
-        nav_canvas = tk.Canvas(nav_outer, bg=theme.NAVY, highlightthickness=0, width=200)
-        nav_scroll = ttk.Scrollbar(nav_outer, orient=tk.VERTICAL, command=nav_canvas.yview)
-        nav_frame = tk.Frame(nav_canvas, bg=theme.NAVY)
+        self._nav_canvas = tk.Canvas(
+            nav_outer, bg=theme.NAVY, highlightthickness=0, width=self._sidebar_w_exp - 20
+        )
+        self._nav_scroll = ttk.Scrollbar(nav_outer, orient=tk.VERTICAL, command=self._nav_canvas.yview)
+        nav_frame = tk.Frame(self._nav_canvas, bg=theme.NAVY)
         nav_frame.bind(
             "<Configure>",
-            lambda e: nav_canvas.configure(scrollregion=nav_canvas.bbox("all")),
+            lambda e: self._nav_canvas.configure(scrollregion=self._nav_canvas.bbox("all")),
         )
-        _nav_win = nav_canvas.create_window((0, 0), window=nav_frame, anchor="nw")
-        nav_canvas.configure(yscrollcommand=nav_scroll.set)
+        self._nav_win = self._nav_canvas.create_window((0, 0), window=nav_frame, anchor="nw")
+        self._nav_canvas.configure(yscrollcommand=self._nav_scroll.set)
 
         def _nav_canvas_cfg(event):
-            nav_canvas.itemconfig(_nav_win, width=event.width)
+            self._nav_canvas.itemconfig(self._nav_win, width=event.width)
 
-        nav_canvas.bind("<Configure>", _nav_canvas_cfg)
-        nav_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        # Scrollbar only if needed — still pack so wheel works; thin visual
-        nav_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self._nav_canvas.bind("<Configure>", _nav_canvas_cfg)
+        self._nav_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self._nav_scroll.pack(side=tk.RIGHT, fill=tk.Y)
 
         def _nav_wheel(event):
             if event.num == 4 or getattr(event, "delta", 0) > 0:
-                nav_canvas.yview_scroll(-1, "units")
+                self._nav_canvas.yview_scroll(-1, "units")
             elif event.num == 5 or getattr(event, "delta", 0) < 0:
-                nav_canvas.yview_scroll(1, "units")
+                self._nav_canvas.yview_scroll(1, "units")
 
-        nav_canvas.bind("<Enter>", lambda e: nav_canvas.bind_all("<MouseWheel>", _nav_wheel))
-        nav_canvas.bind("<Leave>", lambda e: nav_canvas.unbind_all("<MouseWheel>"))
-        nav_canvas.bind("<Enter>", lambda e: nav_canvas.bind_all("<Button-4>", _nav_wheel), add="+")
-        nav_canvas.bind("<Leave>", lambda e: nav_canvas.unbind_all("<Button-4>"), add="+")
-        nav_canvas.bind("<Enter>", lambda e: nav_canvas.bind_all("<Button-5>", _nav_wheel), add="+")
-        nav_canvas.bind("<Leave>", lambda e: nav_canvas.unbind_all("<Button-5>"), add="+")
+        self._nav_canvas.bind("<Enter>", lambda e: self._nav_canvas.bind_all("<MouseWheel>", _nav_wheel))
+        self._nav_canvas.bind("<Leave>", lambda e: self._nav_canvas.unbind_all("<MouseWheel>"))
+        self._nav_canvas.bind("<Enter>", lambda e: self._nav_canvas.bind_all("<Button-4>", _nav_wheel), add="+")
+        self._nav_canvas.bind("<Leave>", lambda e: self._nav_canvas.unbind_all("<Button-4>"), add="+")
+        self._nav_canvas.bind("<Enter>", lambda e: self._nav_canvas.bind_all("<Button-5>", _nav_wheel), add="+")
+        self._nav_canvas.bind("<Leave>", lambda e: self._nav_canvas.unbind_all("<Button-5>"), add="+")
+
+        self._all_sidebar_btns = []
 
         for key, label, icon, allowed in nav_items:
             if not allowed:
                 continue
             if key == "attendance":
-                btn = theme.sidebar_button(
-                    nav_frame, label, icon, command=self.open_attendance,
-                )
+                btn = theme.sidebar_button(nav_frame, label, icon, command=self.open_attendance)
             elif key == "teachers":
-                btn = theme.sidebar_button(
-                    nav_frame, label, icon, command=self.open_teacher_payroll,
-                )
+                btn = theme.sidebar_button(nav_frame, label, icon, command=self.open_teacher_payroll)
+            elif key == "fees":
+                btn = theme.sidebar_button(nav_frame, label, icon, command=self.open_fee_management)
             else:
                 btn = theme.sidebar_button(
                     nav_frame, label, icon, command=lambda k=key: self.show_page(k),
                 )
             btn.pack(fill=tk.X, padx=4, pady=1)
             self.nav_buttons[key] = btn
+            self._all_sidebar_btns.append(btn)
+
+        self._all_sidebar_btns.append(self._ai_btn)
 
         # Build every allowed page's content exactly as before — the
         # existing build_*_tab methods and their DB calls are untouched.
@@ -639,6 +669,35 @@ class StudentManagementApp:
         return launch_teacher_payroll_window(
             self.root, self.user_role, self.current_user
         )
+
+    def toggle_sidebar(self):
+        """Collapse to icons-only or expand with labels. Content width adjusts automatically."""
+        self._sidebar_expanded = not getattr(self, "_sidebar_expanded", True)
+        compact = not self._sidebar_expanded
+        width = self._sidebar_w_exp if self._sidebar_expanded else self._sidebar_w_col
+
+        self.sidebar.configure(width=width)
+        for btn in getattr(self, "_all_sidebar_btns", []):
+            try:
+                theme.set_sidebar_compact(btn, compact)
+            except Exception:
+                pass
+
+        try:
+            if compact:
+                self._nav_scroll.pack_forget()
+                self._sidebar_toggle_btn.config(text="»")
+            else:
+                self._nav_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+                self._sidebar_toggle_btn.config(text="☰")
+        except Exception:
+            pass
+
+        try:
+            self.sidebar.update_idletasks()
+            self._body.update_idletasks()
+        except Exception:
+            pass
 
     def show_page(self, key):
         if key == "teachers":
