@@ -32,9 +32,9 @@ except ImportError:
     _teacher_payroll_module = importlib.util.module_from_spec(_teacher_payroll_spec)
     _teacher_payroll_spec.loader.exec_module(_teacher_payroll_module)
     launch_teacher_payroll_window = _teacher_payroll_module.launch_teacher_payroll_window
-from security import hash_password, verify_password
 from settings_window import build_settings_tab as build_settings_panel
 from finance_window import build_finance_into, launch_finance_window
+from login import LoginWindow
 
 # Optional Timetable module — if missing or broken, legacy inline UI is used
 # so the rest of the app never fails to start.
@@ -106,79 +106,6 @@ def safe_float(raw_text, field_label, default=None):
     except ValueError:
         messagebox.showerror("Invalid Input", f"{field_label} must be a valid number (e.g. 1500 or 1500.50).")
         return None, False
-
-
-# ==========================================
-# LOGIN WINDOW
-# ==========================================
-class LoginWindow:
-    def __init__(self, root):
-        self.root = root
-        self.root.title("AR School Management System — Login")
-        self.root.geometry("460x520")
-        self.root.config(bg=theme.SILVER)
-        self.root.resizable(False, False)
-
-        b = branding.get_branding()
-
-        outer = tk.Frame(self.root, bg=theme.SILVER)
-        outer.pack(fill=tk.BOTH, expand=True)
-
-        card = tk.Frame(outer, bg=theme.NAVY, padx=30, pady=30)
-        card.place(relx=0.5, rely=0.5, anchor="center", width=380, height=460)
-
-        tk.Label(card, text="AR SOFTWARE SOLUTIONS", font=("Segoe UI", 10, "bold"),
-                 bg=theme.NAVY, fg=theme.BRAND_BLUE_LIGHT).pack(pady=(4, 0))
-        tk.Label(card, text="AR School Management System", font=("Segoe UI", 16, "bold"),
-                 bg=theme.NAVY, fg="white", wraplength=320, justify="center").pack(pady=(2, 2))
-        tk.Label(card, text="Smart Software. Simple Solutions.", font=("Segoe UI", 8, "italic"),
-                 bg=theme.NAVY, fg="#94a3b8").pack(pady=(0, 6))
-        tk.Label(card, text=(b["org_name"] or "").upper(), font=("Segoe UI", 9, "bold"),
-                 bg=theme.NAVY, fg="#38bdf8", wraplength=320, justify="center").pack(pady=(0, 18))
-
-        tk.Label(card, text="Username", font=("Segoe UI", 9, "bold"), bg=theme.NAVY, fg="#cbd5e1").pack(anchor="w")
-        self.ent_user = tk.Entry(card, font=("Segoe UI", 11), bg=theme.NAVY_LIGHT, fg="white",
-                                  insertbackground="white", relief="flat")
-        self.ent_user.pack(fill=tk.X, ipady=6, pady=(4, 14))
-
-        tk.Label(card, text="Password", font=("Segoe UI", 9, "bold"), bg=theme.NAVY, fg="#cbd5e1").pack(anchor="w")
-        self.ent_pass = tk.Entry(card, show="*", font=("Segoe UI", 11), bg=theme.NAVY_LIGHT, fg="white",
-                                  insertbackground="white", relief="flat")
-        self.ent_pass.pack(fill=tk.X, ipady=6, pady=(4, 22))
-        self.ent_pass.bind("<Return>", lambda e: self.check_login())
-
-        tk.Button(card, text="LOGIN", command=self.check_login, bg=theme.BRAND_BLUE, fg="white",
-                  font=("Segoe UI", 11, "bold"), bd=0, pady=10, cursor="hand2").pack(fill=tk.X)
-
-        tk.Label(card, text="Default: admin/admin123 · teacher/teacher123 · reception/reception123",
-                 font=("Segoe UI", 7), bg=theme.NAVY, fg="#475569", wraplength=320, justify="center").pack(side=tk.BOTTOM, pady=(20, 0))
-
-    def check_login(self):
-        user = self.ent_user.get().strip()
-        pwd = self.ent_pass.get().strip()
-
-        row = db.run("SELECT password, role, is_hashed, COALESCE(is_active,1) FROM users WHERE username=?", (user,), fetchone=True)
-
-        if row and not row[3]:
-            log_activity(user, "Login attempt on deactivated account")
-            messagebox.showerror("Account Deactivated", "This account has been deactivated. Contact your administrator.")
-            return
-
-        if row and verify_password(pwd, row[0]):
-            role = row[1]
-            # Transparent migration of legacy plain-text passwords to hashed form.
-            if not row[2]:
-                db.run("UPDATE users SET password=?, is_hashed=1 WHERE username=?",
-                       (hash_password(pwd), user), commit=True)
-            log_activity(user, f"User logged in successfully as {role}")
-            self.root.destroy()
-            main_root = tk.Tk()
-            theme.apply_ttk_style()
-            StudentManagementApp(main_root, role, user)
-            main_root.mainloop()
-        else:
-            log_activity(user or "(unknown)", "Failed login attempt")
-            messagebox.showerror("Login Error", "Invalid Username or Password!")
 
 
 # ==========================================
